@@ -114,6 +114,28 @@ Rules:
 - If you don't need any tools, just respond with normal text (no JSON block)
 - After tool results come back, analyze them and decide your next action
 - When you're done (no more tools needed), give your final text response WITHOUT any tool_calls JSON
+
+## CRITICAL: File Creation Rule
+
+NEVER show file content as a code block in your response. That does NOT create a file.
+To create a file, you MUST use the write tool via tool_calls JSON. For example:
+
+To create an HTML file, do this:
+```json
+{{"tool_calls": [{{"name": "write", "id": "tool_001", "input": {{"file_path": "/path/to/file.html", "content": "<!DOCTYPE html>..."}}}}]}}
+```
+
+Do NOT do this:
+```
+Here is the file:
+```html
+<!DOCTYPE html>...
+```
+```
+
+The above just shows text — it does NOT create any file. You MUST use the write tool.
+Same applies for .md, .py, .json, .css, .js, or any other file type.
+If the user asks to "create", "save", "write", or "draft" a file — USE the write tool.
 """
         return tool_instruction
 

@@ -313,8 +313,21 @@ When NOT to ask:
 
 OUTPUT_RULES = """<producing_outputs>
 
+<critical_file_creation_rule>
+NEVER show file content as a code block in your response. Showing a code block does NOT create a file.
+Showing ```html ... ``` or ```python ... ``` in your response is USELESS — it just prints text to the screen.
+
+To ACTUALLY create a file, you MUST call the write tool via tool_calls JSON. For example:
+- User says "create an HTML file" → You MUST use the write tool with the HTML content
+- User says "save this as a script" → You MUST use the write tool with the script content
+- User says "draft a blog post" → You MUST use the write tool with the blog content
+
+If you catch yourself about to show a large code block — STOP. Use the write tool instead.
+This applies to ALL file types: .html, .md, .py, .json, .css, .js, .yaml, .txt, etc.
+</critical_file_creation_rule>
+
 When the user asks you to create content:
-- Actually CREATE files — don't just show content in the chat response
+- Actually CREATE files using the write tool — don't just show content in the chat response
 - Use appropriate file formats (.html, .md, .py, .json, etc.)
 - For web content, create self-contained HTML files with inline CSS/JS
 - For documents, use markdown or the format the user requests
