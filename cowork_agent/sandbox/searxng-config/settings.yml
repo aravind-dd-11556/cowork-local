@@ -1,0 +1,39 @@
+# SearXNG Configuration for Cowork Agent
+use_default_settings: true
+
+general:
+  instance_name: "Cowork Agent Search"
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "cowork-agent-searxng-key"
+  limiter: false
+  image_proxy: false
+
+engines:
+  - name: google
+    engine: google
+    shortcut: g
+    disabled: false
+
+  - name: bing
+    engine: bing
+    shortcut: b
+    disabled: false
+
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: false
+
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    disabled: false

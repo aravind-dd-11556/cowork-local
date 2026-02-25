@@ -1,0 +1,15 @@
+# Core dependencies
+pyyaml>=6.0
+httpx>=0.25.0
+
+# For OpenAI provider (optional)
+# openai>=1.0
+
+# For Anthropic provider (optional)
+# anthropic>=0.25
+
+# Web tools (optional — from claude_web_tools package)
+# trafilatura>=1.6
+# markdownify>=0.11
+# beautifulsoup4>=4.12
+# lxml>=4.9

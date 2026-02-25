@@ -1,0 +1,59 @@
+# Podman Compose — Cowork Agent + Ollama + SearXNG
+# Usage: podman-compose up -d
+#
+# Services:
+#   agent   — The Cowork Agent CLI (interactive)
+#   ollama  — Local LLM inference server
+#   searxng — Self-hosted metasearch engine
+
+services:
+  ollama:
+    image: docker.io/ollama/ollama:latest
+    container_name: cowork-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama:Z
+    environment:
+      - OLLAMA_API_KEY=${OLLAMA_API_KEY:-}  # Set via .env or export
+    restart: unless-stopped
+    # GPU passthrough (uncomment for NVIDIA GPU)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: cowork-searxng
+    ports:
+      - "8888:8080"
+    volumes:
+      - ./searxng-config:/etc/searxng:Z
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: ..
+      dockerfile: sandbox/Containerfile
+    container_name: cowork-agent
+    stdin_open: true
+    tty: true
+    volumes:
+      - ${WORKSPACE_DIR:-./../workspace}:/workspace:Z
+    environment:
+      - COWORK_LLM_PROVIDER=ollama
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - SEARXNG_URL=http://searxng:8080
+    depends_on:
+      - ollama
+      - searxng
+    restart: "no"
+
+volumes:
+  ollama_data:

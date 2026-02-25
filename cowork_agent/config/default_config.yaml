@@ -1,0 +1,43 @@
+# Cowork Agent Framework — Default Configuration
+
+llm:
+  provider: "ollama"    # Options: ollama, openai, anthropic
+  model: "qwen3-vl:235b-instruct-cloud"
+  temperature: 0.7
+  max_tokens: 16384
+
+providers:
+  ollama:
+    base_url: "http://localhost:11434"
+    timeout: 300
+
+  openai:
+    base_url: "https://api.openai.com/v1"
+    # api_key: set via OPENAI_API_KEY env var
+    timeout: 120
+
+  anthropic:
+    # api_key: set via ANTHROPIC_API_KEY env var
+    timeout: 120
+
+tools:
+  bash:
+    timeout: 120
+    max_output_chars: 30000
+  read:
+    max_lines: 2000
+    max_line_length: 2000
+  web_fetch:
+    cache_ttl: 900
+    max_content_length: 500000
+  web_search:
+    default_results: 10
+
+agent:
+  max_iterations: 15
+  workspace_dir: "./workspace"
+
+cli:
+  history_file: "~/.cowork_agent_history"
+  show_tool_execution: true
+  show_thinking: true

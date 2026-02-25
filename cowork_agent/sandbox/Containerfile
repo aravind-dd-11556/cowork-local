@@ -1,0 +1,45 @@
+# Cowork Agent — Podman Container Image
+# Ubuntu 22.04 base with Python 3.11, ripgrep, and common dev tools.
+
+FROM docker.io/library/ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+
+# System packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-venv \
+    python3-pip \
+    ripgrep \
+    git \
+    curl \
+    wget \
+    jq \
+    tree \
+    unzip \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Make python3.11 the default python
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
+    update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+
+# Create workspace directory
+RUN mkdir -p /workspace
+
+# Install Python dependencies
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Copy agent code into a proper package directory
+COPY . /opt/app/cowork_agent/
+WORKDIR /opt/app
+
+# Default workspace mount point
+VOLUME ["/workspace"]
+
+# Run the agent CLI
+ENTRYPOINT ["python", "-m", "cowork_agent"]
+CMD ["--workspace", "/workspace"]
