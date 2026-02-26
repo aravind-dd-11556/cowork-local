@@ -12,6 +12,8 @@ from .models import Message, ToolCall, ToolResult, AgentResponse
 from .providers.base import BaseLLMProvider
 from .tool_registry import ToolRegistry
 from .prompt_builder import PromptBuilder
+from .safety_checker import SafetyChecker
+from .context_manager import ContextManager
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,8 @@ class Agent:
         on_tool_start: Optional[Callable] = None,
         on_tool_end: Optional[Callable] = None,
         on_status: Optional[Callable] = None,
+        workspace_dir: str = "",
+        max_context_tokens: int = 32000,
     ):
         self.provider = provider
         self.registry = registry
@@ -45,6 +49,10 @@ class Agent:
         self.on_tool_start = on_tool_start
         self.on_tool_end = on_tool_end
         self.on_status = on_status  # Called with (message: str) for status updates
+
+        # Safety & context management
+        self.safety = SafetyChecker(workspace_dir=workspace_dir)
+        self.context_mgr = ContextManager(max_context_tokens=max_context_tokens)
 
         # Conversation memory
         self._messages: list[Message] = []
@@ -89,6 +97,13 @@ class Agent:
                 tools=self.registry.get_schemas(),
                 context=context,
             )
+
+            # Prune context if approaching limit
+            if self.context_mgr.needs_pruning(self._messages, system_prompt):
+                logger.info("Context pruning triggered before LLM call")
+                if self.on_status:
+                    self.on_status("Pruning conversation history to fit context window...")
+                self._messages = self.context_mgr.prune(self._messages, system_prompt)
 
             # Call the LLM
             try:
@@ -254,19 +269,60 @@ class Agent:
         return final_text
 
     async def _execute_tools(self, tool_calls: list[ToolCall]) -> list[ToolResult]:
-        """Execute tool calls in parallel and return results."""
-        # Notify UI of each tool start
+        """Execute tool calls with safety checks, then in parallel."""
+        schemas = self.registry.get_schemas()
+        safe_calls = []
+        results = []
+
         for call in tool_calls:
-            if self.on_tool_start:
-                self.on_tool_start(call)
+            # ── Safety check ──
+            check = self.safety.check(call, schemas)
 
-        # Execute all tools in parallel
-        results = await self.registry.execute_parallel(tool_calls)
+            if check.blocked:
+                logger.warning(f"Safety BLOCKED tool call: {call.name} — {check.block_reason}")
+                if self.on_tool_start:
+                    self.on_tool_start(call)
+                blocked_result = check.to_tool_result(call.tool_id)
+                if self.on_tool_end:
+                    self.on_tool_end(call, blocked_result)
+                results.append(blocked_result)
+                continue
 
-        # Notify UI of each tool end
-        for call, result in zip(tool_calls, results):
-            if self.on_tool_end:
-                self.on_tool_end(call, result)
+            if check.warnings:
+                for w in check.warnings:
+                    logger.info(f"Safety warning for {call.name}: {w}")
+
+            # ── Input validation ──
+            validation_error = self.safety.validate_tool_inputs(call, schemas)
+            if validation_error:
+                logger.warning(f"Invalid tool inputs: {validation_error}")
+                if self.on_tool_start:
+                    self.on_tool_start(call)
+                error_result = ToolResult(
+                    tool_id=call.tool_id,
+                    success=False,
+                    output="",
+                    error=f"[VALIDATION] {validation_error}",
+                )
+                if self.on_tool_end:
+                    self.on_tool_end(call, error_result)
+                results.append(error_result)
+                continue
+
+            safe_calls.append(call)
+
+        # Execute safe calls in parallel
+        if safe_calls:
+            for call in safe_calls:
+                if self.on_tool_start:
+                    self.on_tool_start(call)
+
+            executed = await self.registry.execute_parallel(safe_calls)
+
+            for call, result in zip(safe_calls, executed):
+                if self.on_tool_end:
+                    self.on_tool_end(call, result)
+                results.append(result)
 
         return results
 

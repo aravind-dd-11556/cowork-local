@@ -60,6 +60,10 @@ def register_tools(registry: ToolRegistry, config: dict) -> None:
     registry.register(GrepTool(default_dir=workspace))
     registry.register(TodoWriteTool())
 
+    # Interactive tool — ask user questions mid-task
+    from .tools.ask_user import AskUserTool
+    registry.register(AskUserTool())
+
     # Web tools (optional — only if claude_web_tools is available)
     try:
         from .tools.web_search import WebSearchTool
@@ -212,17 +216,26 @@ def main() -> None:
     # Create prompt builder
     prompt_builder = PromptBuilder(config._data)
 
-    # Create agent
+    # Create agent with safety checker and context manager
     agent = Agent(
         provider=provider,
         registry=registry,
         prompt_builder=prompt_builder,
         max_iterations=config.get("agent.max_iterations", 15),
+        workspace_dir=workspace,
+        max_context_tokens=config.get("llm.max_tokens", 32000) * 2,  # context > output
     )
 
     # Create and run CLI
     history_file = config.get("cli.history_file", "~/.cowork_agent_history")
     cli = CLI(agent=agent, history_file=history_file)
+
+    # Wire AskUser tool to CLI input handler
+    try:
+        ask_tool = registry.get_tool("ask_user")
+        ask_tool.set_input_callback(cli.ask_user_handler)
+    except KeyError:
+        pass
 
     logger.info(
         f"Starting agent with provider={config.get('llm.provider')}, "

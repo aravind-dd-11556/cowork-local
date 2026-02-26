@@ -128,6 +128,34 @@ class CLI:
         )
         self._spinner.start("Retrying")
 
+    def ask_user_handler(self, question: str, options: list[str]) -> str:
+        """
+        Handle AskUser tool calls — display question and get user input.
+        Called from the AskUser tool via callback.
+        """
+        self._spinner.stop()
+        print(f"\n  {Colors.BOLD}{Colors.MAGENTA}❓ Agent asks:{Colors.RESET} {question}")
+
+        if options:
+            for i, opt in enumerate(options, 1):
+                print(f"     {Colors.CYAN}{i}.{Colors.RESET} {opt}")
+            print(f"     {Colors.DIM}(Enter number or type your own answer){Colors.RESET}")
+
+        try:
+            response = input(f"  {Colors.BOLD}Your answer ▸ {Colors.RESET}").strip()
+        except (EOFError, KeyboardInterrupt):
+            return ""
+
+        # If they entered a number and we have options, resolve it
+        if options and response.isdigit():
+            idx = int(response) - 1
+            if 0 <= idx < len(options):
+                response = options[idx]
+
+        print()  # Blank line after answer
+        self._spinner.start("Thinking")
+        return response
+
     @staticmethod
     def _tool_icon(name: str) -> str:
         icons = {
@@ -140,6 +168,7 @@ class CLI:
             "web_search": "🌐",
             "web_fetch": "🌍",
             "todo_write": "📋",
+            "ask_user": "❓",
         }
         return icons.get(name, "🔨")
 
