@@ -13,3 +13,10 @@ httpx>=0.25.0
 # markdownify>=0.11
 # beautifulsoup4>=4.12
 # lxml>=4.9
+
+# Sprint 10: Remote control interfaces (optional per mode)
+# fastapi>=0.104.0          # --mode api
+# uvicorn>=0.24.0           # --mode api
+# websockets>=12.0          # --mode api
+# python-telegram-bot>=21.0 # --mode telegram
+# slack-bolt>=1.18.0        # --mode slack

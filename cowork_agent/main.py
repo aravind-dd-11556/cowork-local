@@ -126,6 +126,33 @@ def parse_args() -> argparse.Namespace:
         help="Working directory for the agent",
         default=None,
     )
+    parser.add_argument(
+        "--mode",
+        choices=["cli", "api", "telegram", "slack", "all"],
+        default="cli",
+        help="Interface mode (default: cli)",
+    )
+    parser.add_argument(
+        "--api-port",
+        type=int,
+        default=8000,
+        help="REST API port (for api/all modes)",
+    )
+    parser.add_argument(
+        "--telegram-token",
+        default=os.environ.get("TELEGRAM_BOT_TOKEN"),
+        help="Telegram bot token (for telegram/all modes)",
+    )
+    parser.add_argument(
+        "--slack-token",
+        default=os.environ.get("SLACK_BOT_TOKEN"),
+        help="Slack bot token (for slack/all modes)",
+    )
+    parser.add_argument(
+        "--slack-app-token",
+        default=os.environ.get("SLACK_APP_TOKEN"),
+        help="Slack app-level token (for slack/all modes)",
+    )
     return parser.parse_args()
 
 
@@ -339,30 +366,128 @@ def main() -> None:
 
     registry.register(TaskTool(agent_factory=_create_subagent))
 
-    # Create and run CLI
-    history_file = config.get("cli.history_file", "~/.cowork_agent_history")
-    cli = CLI(agent=agent, history_file=history_file,
-              health_monitor=health_monitor, shutdown_manager=shutdown_mgr,
-              agent_session=agent_session, conversation_store=conversation_store,
-              snapshot_manager=snapshot_manager,
-              usage_analytics=usage_analytics)
-
-    # Wire AskUser tool to CLI input handler
-    try:
-        ask_tool = registry.get_tool("ask_user")
-        ask_tool.set_input_callback(cli.ask_user_handler)
-    except KeyError:
-        pass
+    # ── Sprint 10: Interface Mode Selection ─────────────────────────
+    mode = getattr(args, "mode", "cli")
 
     logger.info(
         f"Starting agent with provider={config.get('llm.provider')}, "
-        f"tools={registry.tool_names}"
+        f"mode={mode}, tools={registry.tool_names}"
     )
 
-    try:
-        asyncio.run(cli.run())
-    except KeyboardInterrupt:
-        print("\nGoodbye!")
+    def _make_cli():
+        """Build and wire the CLI interface."""
+        history_file = config.get("cli.history_file", "~/.cowork_agent_history")
+        cli = CLI(agent=agent, history_file=history_file,
+                  health_monitor=health_monitor, shutdown_manager=shutdown_mgr,
+                  agent_session=agent_session, conversation_store=conversation_store,
+                  snapshot_manager=snapshot_manager,
+                  usage_analytics=usage_analytics)
+        try:
+            ask_tool = registry.get_tool("ask_user")
+            ask_tool.set_input_callback(cli.ask_user_handler)
+        except KeyError:
+            pass
+        return cli
+
+    if mode == "cli":
+        cli = _make_cli()
+        try:
+            asyncio.run(cli.run())
+        except KeyboardInterrupt:
+            print("\nGoodbye!")
+
+    elif mode == "api":
+        from .interfaces.api import RestAPIInterface
+        api = RestAPIInterface(
+            agent=agent,
+            agent_factory=_create_subagent,
+            host="0.0.0.0",
+            port=getattr(args, "api_port", 8000),
+        )
+        print(f"Starting API server on http://0.0.0.0:{args.api_port}")
+        print(f"Dashboard: http://localhost:{args.api_port}/")
+        try:
+            asyncio.run(api.run())
+        except KeyboardInterrupt:
+            print("\nServer stopped.")
+
+    elif mode == "telegram":
+        token = getattr(args, "telegram_token", None)
+        if not token:
+            print("Error: --telegram-token or TELEGRAM_BOT_TOKEN required", file=sys.stderr)
+            sys.exit(1)
+        from .interfaces.telegram_bot import TelegramBotInterface
+        bot = TelegramBotInterface(
+            agent=agent,
+            token=token,
+            agent_factory=_create_subagent,
+            persist_path=os.path.join(workspace, ".cowork", "telegram_sessions.json"),
+        )
+        print("Starting Telegram bot...")
+        try:
+            asyncio.run(bot.run())
+        except KeyboardInterrupt:
+            print("\nBot stopped.")
+
+    elif mode == "slack":
+        bot_token = getattr(args, "slack_token", None)
+        app_token = getattr(args, "slack_app_token", None)
+        if not bot_token or not app_token:
+            print("Error: --slack-token and --slack-app-token required", file=sys.stderr)
+            sys.exit(1)
+        from .interfaces.slack_bot import SlackBotInterface
+        bot = SlackBotInterface(
+            agent=agent,
+            bot_token=bot_token,
+            app_token=app_token,
+            agent_factory=_create_subagent,
+        )
+        print("Starting Slack bot...")
+        try:
+            asyncio.run(bot.run())
+        except KeyboardInterrupt:
+            print("\nBot stopped.")
+
+    elif mode == "all":
+        from .interfaces.api import RestAPIInterface
+        api = RestAPIInterface(
+            agent=agent,
+            agent_factory=_create_subagent,
+            host="0.0.0.0",
+            port=getattr(args, "api_port", 8000),
+        )
+
+        async def run_all():
+            tasks = [asyncio.create_task(api.run())]
+            tg_token = getattr(args, "telegram_token", None)
+            if tg_token:
+                from .interfaces.telegram_bot import TelegramBotInterface
+                tg = TelegramBotInterface(
+                    agent=agent, token=tg_token,
+                    agent_factory=_create_subagent,
+                    persist_path=os.path.join(workspace, ".cowork", "telegram_sessions.json"),
+                )
+                tasks.append(asyncio.create_task(tg.run()))
+            slack_token = getattr(args, "slack_token", None)
+            slack_app = getattr(args, "slack_app_token", None)
+            if slack_token and slack_app:
+                from .interfaces.slack_bot import SlackBotInterface
+                slack = SlackBotInterface(
+                    agent=agent, bot_token=slack_token,
+                    app_token=slack_app, agent_factory=_create_subagent,
+                )
+                tasks.append(asyncio.create_task(slack.run()))
+            print(f"Running API on http://0.0.0.0:{args.api_port}")
+            if tg_token:
+                print("Running Telegram bot")
+            if slack_token:
+                print("Running Slack bot")
+            await asyncio.gather(*tasks)
+
+        try:
+            asyncio.run(run_all())
+        except KeyboardInterrupt:
+            print("\nAll services stopped.")
 
 
 if __name__ == "__main__":
