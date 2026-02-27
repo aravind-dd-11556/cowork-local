@@ -9,6 +9,7 @@ Mirrors real Cowork's worktree support:
 """
 
 from __future__ import annotations
+import json
 import logging
 import os
 import random
@@ -218,6 +219,148 @@ class WorktreeManager:
             return bool(result.stdout.strip())
         except Exception:
             return False
+
+    def merge_back(self, name: str, strategy: str = "manual") -> dict:
+        """
+        Merge a worktree branch back into the parent branch.
+
+        Args:
+            name: Worktree name
+            strategy: 'manual' (merge commit) or 'squash'
+
+        Returns:
+            Dict with success, message, and optional conflicts list.
+        """
+        worktree_path = os.path.join(self.workspace_dir, self.WORKTREE_DIR, name)
+        if not os.path.exists(worktree_path):
+            return {"success": False, "message": f"Worktree '{name}' not found."}
+
+        branch_name = f"worktree/{name}"
+
+        try:
+            merge_args = ["merge", branch_name]
+            if strategy == "squash":
+                merge_args = ["merge", "--squash", branch_name]
+
+            result = subprocess.run(
+                ["git"] + merge_args,
+                cwd=self.workspace_dir,
+                capture_output=True, text=True, timeout=30,
+            )
+
+            if result.returncode == 0:
+                return {
+                    "success": True,
+                    "message": f"Merged worktree '{name}' ({strategy}) successfully.",
+                }
+
+            # Check for conflicts
+            conflict_result = subprocess.run(
+                ["git", "diff", "--name-only", "--diff-filter=U"],
+                cwd=self.workspace_dir,
+                capture_output=True, text=True, timeout=10,
+            )
+            conflicts = [f for f in conflict_result.stdout.strip().splitlines() if f]
+
+            if conflicts:
+                return {
+                    "success": False,
+                    "message": f"Merge conflict in {len(conflicts)} file(s)",
+                    "conflicts": conflicts,
+                }
+
+            return {"success": False, "message": f"Merge failed: {result.stderr.strip()}"}
+
+        except Exception as e:
+            return {"success": False, "message": f"Error merging worktree: {str(e)}"}
+
+    def snapshot(self, name: str) -> dict:
+        """
+        Capture a JSON-serializable snapshot of a worktree's state.
+
+        Returns dict with name, branch, path, has_changes, files, and HEAD commit.
+        """
+        worktree_path = os.path.join(self.workspace_dir, self.WORKTREE_DIR, name)
+        if not os.path.exists(worktree_path):
+            return {"error": f"Worktree '{name}' not found."}
+
+        snapshot = {
+            "name": name,
+            "path": worktree_path,
+            "branch": f"worktree/{name}",
+            "has_changes": self._has_changes(worktree_path),
+        }
+
+        # Get HEAD commit
+        try:
+            result = subprocess.run(
+                ["git", "log", "-1", "--format=%H|%s"],
+                cwd=worktree_path,
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                parts = result.stdout.strip().split("|", 1)
+                snapshot["head_commit"] = parts[0][:12]
+                snapshot["head_message"] = parts[1] if len(parts) > 1 else ""
+        except Exception:
+            snapshot["head_commit"] = ""
+            snapshot["head_message"] = ""
+
+        # Get list of changed files
+        try:
+            result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=worktree_path,
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                snapshot["changed_files"] = [
+                    line[3:] for line in result.stdout.splitlines() if len(line) > 3
+                ]
+            else:
+                snapshot["changed_files"] = []
+        except Exception:
+            snapshot["changed_files"] = []
+
+        return snapshot
+
+    def diff_worktree(self, name: str) -> str:
+        """
+        Show the diff between the parent branch and the worktree branch.
+
+        Returns diff output as a string.
+        """
+        worktree_path = os.path.join(self.workspace_dir, self.WORKTREE_DIR, name)
+        if not os.path.exists(worktree_path):
+            return f"Worktree '{name}' not found."
+
+        branch_name = f"worktree/{name}"
+
+        try:
+            # Get the merge base (where worktree branched off)
+            base_result = subprocess.run(
+                ["git", "merge-base", "HEAD", branch_name],
+                cwd=self.workspace_dir,
+                capture_output=True, text=True, timeout=10,
+            )
+            if base_result.returncode != 0:
+                return f"Cannot find merge base: {base_result.stderr.strip()}"
+
+            base_commit = base_result.stdout.strip()
+
+            # Diff from base to worktree branch
+            diff_result = subprocess.run(
+                ["git", "diff", f"{base_commit}..{branch_name}"],
+                cwd=self.workspace_dir,
+                capture_output=True, text=True, timeout=60,
+            )
+            if diff_result.returncode != 0:
+                return f"Diff failed: {diff_result.stderr.strip()}"
+
+            return diff_result.stdout or "(no differences)"
+
+        except Exception as e:
+            return f"Error getting worktree diff: {str(e)}"
 
     @staticmethod
     def _random_name() -> str:

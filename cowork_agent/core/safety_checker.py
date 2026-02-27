@@ -105,8 +105,10 @@ class SafetyChecker:
             logger.warning(result.warnings)
     """
 
-    def __init__(self, workspace_dir: str = ""):
+    def __init__(self, workspace_dir: str = "",
+                 protected_branches: list[str] | None = None):
         self._workspace = os.path.realpath(workspace_dir) if workspace_dir else ""
+        self._protected_branches = set(protected_branches or ["main", "master"])
 
     class CheckResult:
         """Result of a safety check."""
@@ -155,6 +157,10 @@ class SafetyChecker:
             self._check_search_path(call, result)
         if call.name == "write" and not result.blocked:
             self._check_secrets_in_content(call, result)
+
+        # Sprint 18: Git-specific safety checks
+        if call.name == "git_branch" and not result.blocked:
+            self._check_branch_protection(call, result)
 
         return result
 
@@ -338,3 +344,24 @@ class SafetyChecker:
             return f"Type errors in tool '{call.name}': {'; '.join(type_errors)}"
 
         return None
+
+    # ── Sprint 18: Git-specific checks ─────────────────────────
+
+    def _check_branch_protection(self, call: ToolCall, result: "CheckResult") -> None:
+        """Block force-deletion of protected branches (main, master)."""
+        action = call.input.get("action", "")
+        name = call.input.get("name", "")
+        force = call.input.get("force", False)
+
+        if action == "delete" and name in self._protected_branches and force:
+            result.blocked = True
+            result.block_reason = (
+                f"Cannot force-delete protected branch '{name}'. "
+                f"Protected branches: {', '.join(sorted(self._protected_branches))}"
+            )
+            logger.warning(f"BLOCKED force-delete of protected branch: {name}")
+        elif action == "delete" and name in self._protected_branches:
+            result.warnings.append(
+                f"Attempting to delete protected branch '{name}'. "
+                f"This will only succeed if it's fully merged."
+            )

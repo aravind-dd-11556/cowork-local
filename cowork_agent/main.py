@@ -399,6 +399,44 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"Retry executor not available: {e}")
 
+    # ── Sprint 18: Wire Git Operations, File Locks, Workspace Context ──
+    try:
+        if config.get("git.enabled", True):
+            from .core.git_ops import GitOperations
+            from .core.workspace_context import WorkspaceContext
+            from .tools.git_tools import (
+                GitStatusTool, GitDiffTool, GitCommitTool, GitBranchTool, GitLogTool,
+            )
+
+            git_ops = GitOperations(workspace_dir=workspace)
+            workspace_context = WorkspaceContext(workspace_dir=workspace, git_ops=git_ops)
+            workspace_context.refresh()
+
+            # Register 5 git tools
+            protected = config.get("git.protected_branches", ["main", "master"])
+            max_log = config.get("git.max_log_entries", 50)
+            registry.register(GitStatusTool(git_ops=git_ops))
+            registry.register(GitDiffTool(git_ops=git_ops))
+            registry.register(GitCommitTool(git_ops=git_ops))
+            registry.register(GitBranchTool(git_ops=git_ops, protected_branches=set(protected)))
+            registry.register(GitLogTool(git_ops=git_ops, max_entries=max_log))
+
+            # Attach to agent for workspace awareness
+            agent.workspace_context = workspace_context
+            logger.info("Git operations initialized — 5 git tools registered")
+    except Exception as e:
+        logger.warning(f"Git operations not available: {e}")
+
+    try:
+        if config.get("concurrency.file_lock_enabled", True):
+            from .core.file_lock import FileLockManager
+            lock_timeout = config.get("concurrency.lock_timeout_seconds", 300)
+            file_lock_manager = FileLockManager(lock_timeout=float(lock_timeout))
+            agent.file_lock_manager = file_lock_manager
+            logger.info("File lock manager initialized")
+    except Exception as e:
+        logger.warning(f"File lock manager not available: {e}")
+
     # ── Sprint 12: Wire Worktree Tools ────────────────────────────────
     try:
         from .tools.worktree_tool import EnterWorktreeTool, ListWorktreesTool, RemoveWorktreeTool

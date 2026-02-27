@@ -44,6 +44,20 @@ agent:
     chunk_timeout: 30.0
     total_timeout: 300.0
 
+# Sprint 18: Git & Worktree Integration
+git:
+  enabled: true
+  protected_branches: ["main", "master"]
+  max_log_entries: 50
+
+worktree:
+  max_active: 10
+  snapshot_on_exit: true
+
+concurrency:
+  file_lock_enabled: true
+  lock_timeout_seconds: 300
+
 # Sprint 12: Optional features
 scheduler:
   enabled: true
