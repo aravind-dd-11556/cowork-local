@@ -36,6 +36,28 @@ tools:
 agent:
   max_iterations: 15
   workspace_dir: "./workspace"
+  response_cache:
+    enabled: true
+    max_size: 100
+    ttl: 3600
+  stream_hardener:
+    chunk_timeout: 30.0
+    total_timeout: 300.0
+
+# Sprint 12: Optional features
+scheduler:
+  enabled: true
+
+mcp:
+  enabled: false
+  servers: []
+
+plugins:
+  enabled: true
+  user_plugins_dir: "~/.cowork_agent/plugins"
+
+multi_agent:
+  enabled: false
 
 cli:
   history_file: "~/.cowork_agent_history"

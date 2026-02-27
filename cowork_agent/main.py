@@ -81,6 +81,10 @@ def register_tools(registry: ToolRegistry, config: dict) -> None:
     from .tools.ask_user import AskUserTool
     registry.register(AskUserTool())
 
+    # Notebook editing tool
+    from .tools.notebook_edit import NotebookEditTool
+    registry.register(NotebookEditTool())
+
     # Web tools (optional — only if claude_web_tools is available)
     try:
         from .tools.web_search import WebSearchTool
@@ -363,6 +367,139 @@ def main() -> None:
     # Attach to agent for automatic use
     agent.cost_tracker = cost_tracker
     agent.health_tracker = health_tracker
+
+    # ── Sprint 12: Wire Response Cache + Stream Hardener + Retry ────────
+    try:
+        from .core.response_cache import ResponseCache
+        rc_cfg = config.get("agent.response_cache", {})
+        if rc_cfg.get("enabled", True):
+            agent.response_cache = ResponseCache(
+                max_size=rc_cfg.get("max_size", 100),
+                ttl=rc_cfg.get("ttl", 3600),
+            )
+            logger.info("Response cache initialized")
+    except Exception as e:
+        logger.warning(f"Response cache not available: {e}")
+
+    try:
+        from .core.stream_hardener import StreamHardener
+        sh_cfg = config.get("agent.stream_hardener", {})
+        agent.stream_hardener = StreamHardener(
+            chunk_timeout=sh_cfg.get("chunk_timeout", 30.0),
+            total_timeout=sh_cfg.get("total_timeout", 300.0),
+        )
+        logger.info("Stream hardener initialized")
+    except Exception as e:
+        logger.warning(f"Stream hardener not available: {e}")
+
+    try:
+        from .core.retry import RetryExecutor
+        agent.retry_executor = RetryExecutor()
+        logger.info("Retry executor initialized")
+    except Exception as e:
+        logger.warning(f"Retry executor not available: {e}")
+
+    # ── Sprint 12: Wire Worktree Tools ────────────────────────────────
+    try:
+        from .tools.worktree_tool import EnterWorktreeTool, ListWorktreesTool, RemoveWorktreeTool
+        enter_wt = EnterWorktreeTool(workspace_dir=workspace)
+        # Late-bind BashTool reference so worktree can switch cwd
+        try:
+            bash_tool = registry.get_tool("bash")
+            enter_wt.set_bash_tool(bash_tool)
+        except KeyError:
+            pass
+        registry.register(enter_wt)
+        registry.register(ListWorktreesTool(workspace_dir=workspace))
+        registry.register(RemoveWorktreeTool(workspace_dir=workspace))
+        logger.info("Worktree tools registered")
+    except Exception as e:
+        logger.warning(f"Worktree tools not available: {e}")
+
+    # ── Sprint 12: Wire Task Scheduler ────────────────────────────────
+    try:
+        if config.get("scheduler.enabled", True):
+            from .core.scheduler import TaskScheduler
+            from .tools.scheduler_tools import (
+                CreateScheduledTaskTool, ListScheduledTasksTool, UpdateScheduledTaskTool,
+            )
+            task_scheduler = TaskScheduler(workspace_dir=workspace)
+            task_scheduler.load()
+            registry.register(CreateScheduledTaskTool(scheduler=task_scheduler))
+            registry.register(ListScheduledTasksTool(scheduler=task_scheduler))
+            registry.register(UpdateScheduledTaskTool(scheduler=task_scheduler))
+            logger.info("Task scheduler initialized")
+    except Exception as e:
+        logger.warning(f"Task scheduler not available: {e}")
+
+    # ── Sprint 12: Wire Plugin System ─────────────────────────────────
+    try:
+        if config.get("plugins.enabled", True):
+            from .core.plugin_system import PluginSystem
+            plugin_system = PluginSystem(
+                workspace_dir=workspace,
+                user_plugins_dir=config.get("plugins.user_plugins_dir", ""),
+            )
+            loaded_plugins = plugin_system.discover_and_load()
+            for info, tools in loaded_plugins:
+                for tool in tools:
+                    registry.register(tool)
+            if loaded_plugins:
+                logger.info(
+                    f"Loaded {len(loaded_plugins)} plugins: {plugin_system.plugin_names}"
+                )
+    except Exception as e:
+        logger.warning(f"Plugin system not available: {e}")
+
+    # ── Sprint 12: Wire MCP Client (config-gated) ────────────────────
+    try:
+        if config.get("mcp.enabled", False):
+            from .core.mcp_client import MCPClient, MCPServerConfig
+            from .tools.mcp_bridge import register_mcp_tools
+
+            mcp_servers = config.get("mcp.servers", [])
+            if mcp_servers:
+                server_configs = [
+                    MCPServerConfig(
+                        name=s.get("name", f"server_{i}"),
+                        command=s.get("command", ""),
+                        args=s.get("args", []),
+                        env=s.get("env", {}),
+                        transport=s.get("transport", "stdio"),
+                        url=s.get("url", ""),
+                    )
+                    for i, s in enumerate(mcp_servers)
+                ]
+                mcp_client = MCPClient()
+                for sc in server_configs:
+                    mcp_client.add_server(sc)
+                num_mcp = register_mcp_tools(registry, mcp_client)
+                logger.info(f"Registered {num_mcp} MCP tools")
+    except Exception as e:
+        logger.warning(f"MCP client not available: {e}")
+
+    # ── Sprint 12: Wire Multi-Agent System (config-gated) ─────────────
+    try:
+        if config.get("multi_agent.enabled", False):
+            from .core.context_bus import ContextBus
+            from .core.agent_registry import AgentRegistry
+            from .core.supervisor import Supervisor, SupervisorConfig
+            from .core.delegate_tool import DelegateTaskTool
+
+            context_bus = ContextBus()
+            agent_registry = AgentRegistry()
+            supervisor = Supervisor(
+                config=SupervisorConfig(),
+                agent_registry=agent_registry,
+                context_bus=context_bus,
+            )
+            registry.register(DelegateTaskTool(
+                agent_registry=agent_registry,
+                context_bus=context_bus,
+            ))
+            logger.info("Multi-agent system initialized")
+    except Exception as e:
+        logger.warning(f"Multi-agent system not available: {e}")
 
     # Register Task tool (subagent delegation)
     from .tools.task_tool import TaskTool

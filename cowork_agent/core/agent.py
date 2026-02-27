@@ -70,6 +70,10 @@ class Agent:
         # Sprint 9: Cost and health tracking (set by main.py)
         self.cost_tracker = None      # CostTracker instance
         self.health_tracker = None    # ProviderHealthTracker instance
+        # Sprint 12: Streaming & caching (set by main.py)
+        self.response_cache = None    # ResponseCache instance
+        self.stream_hardener = None   # StreamHardener instance
+        self.retry_executor = None    # RetryExecutor instance
 
         # Callbacks for UI updates
         self.on_tool_start = on_tool_start
@@ -176,20 +180,44 @@ class Agent:
                     self._messages.append(Message(role="assistant", content=budget_msg))
                     return budget_msg
 
-            # Call the LLM
-            try:
-                response = await self.provider.send_message(
+            # Sprint 12: Check response cache before calling LLM
+            _cache_key = None
+            if self.response_cache:
+                _cache_key = self.response_cache.make_key(
+                    model=getattr(self.provider, "model", ""),
                     messages=self._messages,
-                    tools=self.registry.get_schemas(),
                     system_prompt=system_prompt,
+                    tools=self.registry.get_schemas(),
                 )
-            except Exception as e:
-                logger.error(f"LLM error: {e}")
-                error_text = f"Error communicating with LLM: {str(e)}"
-                self._messages.append(
-                    Message(role="assistant", content=error_text)
-                )
-                return error_text
+                cached = self.response_cache.get(_cache_key)
+                if cached:
+                    logger.info("Response cache hit — skipping LLM call")
+                    response = cached
+                    # Skip directly to response handling below
+                else:
+                    cached = None
+
+            # Call the LLM (skip if cache hit)
+            if not (self.response_cache and _cache_key and
+                    self.response_cache.get(_cache_key)):
+                try:
+                    response = await self.provider.send_message(
+                        messages=self._messages,
+                        tools=self.registry.get_schemas(),
+                        system_prompt=system_prompt,
+                    )
+                except Exception as e:
+                    logger.error(f"LLM error: {e}")
+                    error_text = f"Error communicating with LLM: {str(e)}"
+                    self._messages.append(
+                        Message(role="assistant", content=error_text)
+                    )
+                    return error_text
+
+                # Sprint 12: Cache eligible responses
+                if (self.response_cache and _cache_key and
+                        self.response_cache._is_cacheable(response)):
+                    self.response_cache.put(_cache_key, response)
 
             # Sprint 4: Record token usage from the response
             if self.token_tracker and response.usage:
@@ -738,14 +766,20 @@ class Agent:
             if self.context_mgr.needs_pruning(self._messages, system_prompt):
                 self._messages = self.context_mgr.prune(self._messages, system_prompt)
 
-            # Stream from the LLM
+            # Stream from the LLM (with optional stream hardener)
             full_text = ""
             try:
-                async for chunk in self.provider.send_message_stream(
+                raw_stream = self.provider.send_message_stream(
                     messages=self._messages,
                     tools=self.registry.get_schemas(),
                     system_prompt=system_prompt,
-                ):
+                )
+                # Sprint 12: Wrap with stream hardener if available
+                if self.stream_hardener:
+                    stream = self.stream_hardener.wrap(raw_stream)
+                else:
+                    stream = raw_stream
+                async for chunk in stream:
                     full_text += chunk
                     yield chunk
             except Exception as e:
