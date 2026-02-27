@@ -280,8 +280,3 @@ The repo includes an automated code review hook that runs on every commit:
 
 Critical/high severity issues block the commit. Medium/low issues are reported but non-blocking.
 
----
-
-## License
-
-Internal project — Zoho Corp.
