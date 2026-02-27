@@ -2,7 +2,7 @@
 
 A modular AI agent framework inspired by Anthropic's Cowork mode — built from the ground up with configurable LLM providers, a rich tool ecosystem, multi-agent orchestration, and an interactive CLI.
 
-**721 tests** | **84 files** | **9 development sprints** | **3 LLM providers**
+**813 tests** | **90+ files** | **10 development sprints** | **3 LLM providers**
 
 ---
 
@@ -47,6 +47,14 @@ A modular AI agent framework inspired by Anthropic's Cowork mode — built from 
 - Per-tool metrics (latency percentiles, success rates, call counts)
 - Session usage analytics with efficiency scoring
 - Rich CLI output with ANSI formatting
+
+### Remote Control Interfaces (Sprint 10)
+- **REST API** — FastAPI server with session management, SSE streaming, tool listing
+- **WebSocket** — Real-time bidirectional chat with JSON protocol
+- **Web Dashboard** — Browser-based chat UI with dark/light theme, tool indicators, export
+- **Telegram Bot** — Per-user sessions, inline keyboards for ask_user, message splitting
+- **Slack Bot** — Socket Mode, Block Kit buttons, threaded tool indicators
+- **`/remote-control` CLI command** — Start/stop any interface live from the running CLI
 
 ### Developer Experience
 - Automated code review via pre-commit hook (AST analysis, secret scanning, quality checks)
@@ -104,6 +112,57 @@ python -m cowork_agent -vv       # debug logging
 python -m cowork_agent -c my_config.yaml
 ```
 
+### Remote Control Modes
+
+**REST API + Web Dashboard:**
+```bash
+python -m cowork_agent --mode api --api-port 8000
+# Dashboard: http://localhost:8000/
+```
+
+**Telegram Bot:**
+```bash
+export TELEGRAM_BOT_TOKEN="your-bot-token"
+python -m cowork_agent --mode telegram
+```
+
+**Slack Bot:**
+```bash
+export SLACK_BOT_TOKEN="xoxb-your-bot-token"
+export SLACK_APP_TOKEN="xapp-your-app-token"
+python -m cowork_agent --mode slack
+```
+
+**All services at once:**
+```bash
+python -m cowork_agent --mode all --api-port 8000
+```
+
+**Or start from within the CLI:**
+```bash
+python -m cowork_agent    # starts in CLI mode
+# Then type: /rc start slack
+# Or:        /rc start api 9000
+# Or:        /rc start all
+```
+
+---
+
+### Slack Bot Setup
+
+1. Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From scratch**
+2. **Socket Mode** → Toggle **ON** → Generate an App-Level Token with `connections:write` scope → copy it as `SLACK_APP_TOKEN`
+3. **OAuth & Permissions** → Add Bot Token Scopes: `chat:write`, `app_mentions:read`, `im:history`, `im:read`
+4. **Event Subscriptions** → Toggle **ON** → Subscribe to bot events: `message.im`, `app_mention`
+5. **App Home** → Enable **Messages Tab** → Check **Allow users to send messages**
+6. **Install App** → Install to Workspace → Copy Bot User OAuth Token as `SLACK_BOT_TOKEN`
+
+### Telegram Bot Setup
+
+1. Message [@BotFather](https://t.me/BotFather) on Telegram → `/newbot` → follow the prompts
+2. Copy the bot token as `TELEGRAM_BOT_TOKEN`
+3. Optionally send `/setprivacy` → **Disable** (so the bot can read group messages)
+
 ---
 
 ## CLI Commands
@@ -112,11 +171,21 @@ python -m cowork_agent -c my_config.yaml
 |---------|-------------|
 | `/help` | Show available commands |
 | `/clear` | Clear conversation history |
-| `/tools` | List all registered tools |
-| `/status` | Show agent status (provider, tokens, etc.) |
+| `/history` | Show conversation history |
+| `/todos` | Show current task list |
+| `/config` | Show current configuration |
+| `/health` | Show system health status |
+| `/sessions` | List saved sessions |
+| `/snapshot` | Create state snapshot |
 | `/metrics` | Show per-tool performance metrics |
 | `/analytics` | Show session usage analytics and cost breakdown |
-| `/quit` | Exit the agent |
+| `/rc status` | Show running remote services |
+| `/rc start api` | Start REST API + WebSocket server (default port 8000) |
+| `/rc start telegram` | Start Telegram bot |
+| `/rc start slack` | Start Slack bot |
+| `/rc start all` | Start all available remote services |
+| `/rc stop <service>` | Stop a running remote service |
+| `/exit` | Exit the agent (stops all remote services) |
 | `Ctrl+C` | Cancel current operation |
 
 ---
@@ -168,13 +237,19 @@ cowork_agent/
 │   ├── notebook_edit.py, plan_tools.py
 │   └── task_tool.py, scheduler_tools.py
 ├── interfaces/
-│   ├── cli.py                 # Interactive terminal interface
-│   └── rich_output.py         # ANSI-formatted output helpers
+│   ├── base.py                # BaseInterface ABC (interface contract)
+│   ├── cli.py                 # Interactive terminal interface + /remote-control
+│   ├── api.py                 # REST API + WebSocket server (FastAPI)
+│   ├── telegram_bot.py        # Telegram bot (python-telegram-bot)
+│   ├── slack_bot.py           # Slack bot (slack-bolt, Socket Mode)
+│   ├── rich_output.py         # ANSI-formatted output helpers
+│   └── web/
+│       └── dashboard.html     # Browser-based chat UI
 ├── prompts/
 │   └── behavioral_rules.py    # System prompt behavioral rules
 ├── vendor/
 │   └── claude_web_tools/      # Vendored web search/fetch backend
-└── tests/                     # 721 tests across 13 suites
+└── tests/                     # 813 tests across 14 suites
     ├── test_p1.py             # Sprint 1: Streaming, circuit breaker, retry (66)
     ├── test_p2.py             # Sprint 2: Skills, plugins, MCP, scheduler (56)
     ├── test_p3.py             # Sprint 3: Ask user, notebook, worktree (49)
@@ -185,6 +260,7 @@ cowork_agent/
     ├── test_p7.py             # Sprint 7: Hybrid cache, error catalog, context bus (72)
     ├── test_p8.py             # Sprint 8: Sanitizer, metrics, tracer, permissions (85)
     ├── test_p9.py             # Sprint 9: Model router, cost, health, pool, analytics (70)
+    ├── test_p10.py            # Sprint 10: Remote control, API, Slack, Telegram (92)
     ├── test_qa_audit.py       # QA audit (42)
     └── test_security_audit.py # Security audit (43)
 ```
@@ -263,9 +339,10 @@ All settings can be set via `default_config.yaml`, a custom YAML file (`-c`), or
 | 7 | Hybrid cache, error catalog, context bus enhancements | 72 |
 | 8 | Output sanitizer, metrics, execution tracer, permissions, rich output | 85 |
 | 9 | Model router, cost tracker, provider health, provider pool, analytics | 70 |
+| 10 | Remote control: REST API, WebSocket, Telegram, Slack, /rc command | 92 |
 | QA | Quality assurance audit | 42 |
 | Security | Security audit and hardening | 43 |
-| **Total** | | **721** |
+| **Total** | | **813** |
 
 ---
 
