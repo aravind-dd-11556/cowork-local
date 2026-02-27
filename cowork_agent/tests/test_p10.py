@@ -867,5 +867,251 @@ class TestSprint10Integration(unittest.TestCase):
         self.assertEqual(args.api_port, 9000)
 
 
+# ── Remote Control Command Tests ─────────────────────────────────
+
+
+class TestRemoteControlCommand(unittest.TestCase):
+    """Tests for /remote-control (/rc) CLI command."""
+
+    def _make_cli(self, agent=None, factory=None):
+        """Create a CLI instance with remote control support."""
+        from cowork_agent.interfaces.cli import CLI
+        ag = agent or _make_mock_agent()
+        cli = CLI(
+            agent=ag,
+            history_file="/dev/null",
+            streaming=False,
+            agent_factory=factory or (lambda: _make_mock_agent()),
+            workspace="/tmp/test_workspace",
+        )
+        return cli
+
+    def test_rc_status_empty(self):
+        """Status shows no services when none running."""
+        cli = self._make_cli()
+        self.assertEqual(cli._remote_services, {})
+        # Should not raise
+        cli._rc_show_status()
+
+    def test_rc_help(self):
+        """Help text doesn't raise."""
+        cli = self._make_cli()
+        cli._rc_help()
+
+    def test_rc_handle_status_default(self):
+        """Empty /rc shows status."""
+        cli = self._make_cli()
+        _run(cli._handle_remote_control(""))
+
+    def test_rc_handle_help(self):
+        """/rc help shows help."""
+        cli = self._make_cli()
+        _run(cli._handle_remote_control("help"))
+
+    def test_rc_handle_unknown(self):
+        """/rc foobar shows error."""
+        cli = self._make_cli()
+        _run(cli._handle_remote_control("foobar"))
+
+    def test_rc_start_no_service(self):
+        """/rc start with no service name shows error."""
+        cli = self._make_cli()
+        _run(cli._rc_start(""))
+
+    def test_rc_start_unknown_service(self):
+        """/rc start xyz shows error."""
+        cli = self._make_cli()
+        _run(cli._rc_start("xyz"))
+
+    def test_rc_stop_no_service(self):
+        """/rc stop with no name shows error."""
+        cli = self._make_cli()
+        _run(cli._rc_stop(""))
+
+    def test_rc_stop_not_running(self):
+        """/rc stop api when not running shows warning."""
+        cli = self._make_cli()
+        _run(cli._rc_stop("api"))
+
+    def test_rc_stop_all_empty(self):
+        """/rc stop all when nothing running is harmless."""
+        cli = self._make_cli()
+        _run(cli._stop_all_remote())
+
+    def test_rc_start_api_no_factory(self):
+        """API start fails gracefully without agent factory."""
+        cli = self._make_cli()
+        cli._agent_factory = None
+        _run(cli._start_api_server())
+
+    def test_rc_start_telegram_no_token(self):
+        """Telegram start fails gracefully without token."""
+        cli = self._make_cli()
+        with patch.dict(os.environ, {}, clear=True):
+            # Remove TELEGRAM_BOT_TOKEN if present
+            os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+            _run(cli._start_telegram_bot(""))
+
+    def test_rc_start_slack_no_tokens(self):
+        """Slack start fails gracefully without tokens."""
+        cli = self._make_cli()
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("SLACK_BOT_TOKEN", None)
+            os.environ.pop("SLACK_APP_TOKEN", None)
+            _run(cli._start_slack_bot())
+
+    def test_rc_start_api_success(self):
+        """API server can be registered as a running service."""
+        cli = self._make_cli()
+
+        # Simulate what _start_api_server does after launching
+        async def test():
+            task = asyncio.create_task(asyncio.sleep(100))
+            cli._remote_services["api"] = {
+                "task": task,
+                "started_at": time.time(),
+                "info": "http://localhost:9999",
+                "instance": MagicMock(),
+            }
+            self.assertIn("api", cli._remote_services)
+            self.assertFalse(task.done())
+            # Clean up
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        _run(test())
+
+    def test_rc_already_running(self):
+        """Starting a service that's already running shows warning."""
+        cli = self._make_cli()
+
+        # Add a fake running task
+        loop = asyncio.new_event_loop()
+        task = loop.create_task(asyncio.sleep(100))
+        cli._remote_services["api"] = {
+            "task": task,
+            "started_at": time.time(),
+            "info": "http://localhost:8000",
+        }
+        loop.run_until_complete(cli._rc_start("api"))
+        # Should still be there (not duplicated)
+        self.assertIn("api", cli._remote_services)
+        task.cancel()
+        try:
+            loop.run_until_complete(task)
+        except asyncio.CancelledError:
+            pass
+        loop.close()
+
+    def test_rc_stop_cancels_task(self):
+        """Stopping a service cancels its asyncio task."""
+        cli = self._make_cli()
+
+        async def test():
+            task = asyncio.create_task(asyncio.sleep(100))
+            cli._remote_services["api"] = {
+                "task": task,
+                "started_at": time.time(),
+                "info": "http://localhost:8000",
+            }
+            await cli._rc_stop("api")
+            self.assertTrue(task.cancelled() or task.done())
+            self.assertNotIn("api", cli._remote_services)
+
+        _run(test())
+
+    def test_rc_stop_all_cancels_multiple(self):
+        """Stop all cancels every running service."""
+        cli = self._make_cli()
+
+        async def test():
+            t1 = asyncio.create_task(asyncio.sleep(100))
+            t2 = asyncio.create_task(asyncio.sleep(100))
+            cli._remote_services["api"] = {"task": t1, "started_at": time.time(), "info": "api"}
+            cli._remote_services["telegram"] = {"task": t2, "started_at": time.time(), "info": "tg"}
+            await cli._stop_all_remote()
+            self.assertEqual(len(cli._remote_services), 0)
+            self.assertTrue(t1.cancelled() or t1.done())
+            self.assertTrue(t2.cancelled() or t2.done())
+
+        _run(test())
+
+    def test_rc_status_shows_running(self):
+        """Status displays running services."""
+        cli = self._make_cli()
+
+        async def test():
+            task = asyncio.create_task(asyncio.sleep(100))
+            cli._remote_services["api"] = {
+                "task": task,
+                "started_at": time.time() - 120,  # 2 min ago
+                "info": "http://localhost:8000",
+            }
+            cli._rc_show_status()  # Should not raise, prints to stdout
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        _run(test())
+
+    def test_rc_status_shows_stopped(self):
+        """Status shows 'stopped' for completed tasks."""
+        cli = self._make_cli()
+
+        async def test():
+            task = asyncio.create_task(asyncio.sleep(0))  # completes immediately
+            await asyncio.sleep(0.01)
+            cli._remote_services["api"] = {
+                "task": task,
+                "started_at": time.time(),
+                "info": "http://localhost:8000",
+            }
+            cli._rc_show_status()  # Should show stopped
+
+        _run(test())
+
+    def test_handle_command_async(self):
+        """/rc command is properly dispatched from async _handle_command."""
+        cli = self._make_cli()
+        result = _run(cli._handle_command("/rc status"))
+        self.assertTrue(result)
+
+    def test_handle_command_exit_stops_remote(self):
+        """/exit stops remote services before exiting."""
+        cli = self._make_cli()
+
+        async def test():
+            task = asyncio.create_task(asyncio.sleep(100))
+            cli._remote_services["api"] = {
+                "task": task,
+                "started_at": time.time(),
+                "info": "test",
+            }
+            result = await cli._handle_command("/exit")
+            self.assertTrue(result)
+            self.assertFalse(cli._running)
+            self.assertEqual(len(cli._remote_services), 0)
+
+        _run(test())
+
+    def test_cli_init_stores_factory(self):
+        """CLI stores agent_factory and workspace."""
+        factory = lambda: _make_mock_agent()
+        cli = self._make_cli(factory=factory)
+        self.assertIs(cli._agent_factory, factory)
+        self.assertEqual(cli._workspace, "/tmp/test_workspace")
+
+    def test_rc_start_all(self):
+        """/rc start all attempts to start api, telegram, and slack."""
+        cli = self._make_cli()
+        # All will fail gracefully (no real tokens, no imports)
+        _run(cli._rc_start("all"))
+
+
 if __name__ == "__main__":
     unittest.main()

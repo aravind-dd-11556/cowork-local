@@ -381,7 +381,9 @@ def main() -> None:
                   health_monitor=health_monitor, shutdown_manager=shutdown_mgr,
                   agent_session=agent_session, conversation_store=conversation_store,
                   snapshot_manager=snapshot_manager,
-                  usage_analytics=usage_analytics)
+                  usage_analytics=usage_analytics,
+                  agent_factory=_create_subagent,
+                  workspace=workspace)
         try:
             ask_tool = registry.get_tool("ask_user")
             ask_tool.set_input_callback(cli.ask_user_handler)

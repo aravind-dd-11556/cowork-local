@@ -12,7 +12,7 @@ import readline
 import threading
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Callable
 
 from ..core.agent import Agent
 from ..core.models import ToolCall, ToolResult
@@ -95,6 +95,8 @@ class CLI:
         conversation_store: Optional[ConversationStore] = None,
         snapshot_manager: Optional[StateSnapshotManager] = None,
         usage_analytics=None,
+        agent_factory: Optional[Callable] = None,
+        workspace: Optional[str] = None,
     ):
         self.agent = agent
         self.history_file = os.path.expanduser(history_file)
@@ -109,6 +111,11 @@ class CLI:
         self._usage_analytics = usage_analytics
         self._rich = RichOutput(width=100)
         self._tool_timers: dict[str, float] = {}  # tool_id -> start_time
+        self._agent_factory = agent_factory
+        self._workspace = workspace or os.getcwd()
+
+        # Remote control state
+        self._remote_services: dict[str, dict] = {}  # name -> {task, started_at, info}
 
         # Wire up callbacks
         self.agent.on_tool_start = self._on_tool_start
@@ -224,7 +231,7 @@ class CLI:
   Press Ctrl+C to cancel, Ctrl+D to exit.{Colors.RESET}
 """)
 
-    def _handle_command(self, cmd: str) -> bool:
+    async def _handle_command(self, cmd: str) -> bool:
         """
         Handle slash commands. Returns True if the command was handled,
         False if it should be sent to the agent.
@@ -255,7 +262,7 @@ class CLI:
             return True
 
         elif command == "/health":
-            asyncio.get_event_loop().run_until_complete(self._show_health())
+            await self._show_health()
             return True
 
         elif command == "/sessions":
@@ -278,7 +285,14 @@ class CLI:
             self._show_analytics()
             return True
 
+        elif command in ("/remote-control", "/rc"):
+            await self._handle_remote_control(arg)
+            return True
+
         elif command in ("/exit", "/quit", "/q"):
+            # Stop all remote services before exiting
+            if self._remote_services:
+                await self._stop_all_remote()
             self._running = False
             return True
 
@@ -299,6 +313,8 @@ class CLI:
   {Colors.CYAN}/snapshots{Colors.RESET} List saved snapshots
   {Colors.CYAN}/metrics{Colors.RESET}   Show tool execution metrics
   {Colors.CYAN}/analytics{Colors.RESET} Show session usage analytics
+  {Colors.CYAN}/remote-control{Colors.RESET} Manage remote interfaces (API, Telegram, Slack)
+  {Colors.CYAN}/rc{Colors.RESET}        Shortcut for /remote-control
   {Colors.CYAN}/exit{Colors.RESET}      Exit the agent
 """)
 
@@ -502,6 +518,243 @@ class CLI:
   {Colors.BOLD}Max iterations:{Colors.RESET} {self.agent.max_iterations}
 """)
 
+    # ── Remote Control ─────────────────────────────────────────────
+
+    async def _handle_remote_control(self, arg: str) -> None:
+        """Handle /remote-control subcommands."""
+        parts = arg.strip().split(None, 1)
+        subcmd = parts[0].lower() if parts else ""
+        sub_arg = parts[1] if len(parts) > 1 else ""
+
+        if subcmd in ("status", ""):
+            self._rc_show_status()
+        elif subcmd == "start":
+            await self._rc_start(sub_arg)
+        elif subcmd == "stop":
+            await self._rc_stop(sub_arg)
+        elif subcmd == "help":
+            self._rc_help()
+        else:
+            print(f"  {Colors.RED}Unknown subcommand '{subcmd}'.{Colors.RESET}")
+            self._rc_help()
+
+    def _rc_help(self) -> None:
+        """Show remote control help."""
+        print(f"""
+{Colors.BOLD}Remote Control — Manage remote interfaces{Colors.RESET}
+
+  {Colors.CYAN}/rc status{Colors.RESET}                Show running services
+  {Colors.CYAN}/rc start api{Colors.RESET}             Start REST API + WebSocket server
+  {Colors.CYAN}/rc start api 9000{Colors.RESET}        Start API on custom port
+  {Colors.CYAN}/rc start telegram{Colors.RESET}        Start Telegram bot
+  {Colors.CYAN}/rc start telegram <token>{Colors.RESET} Start with explicit token
+  {Colors.CYAN}/rc start slack{Colors.RESET}           Start Slack bot
+  {Colors.CYAN}/rc start all{Colors.RESET}             Start all available services
+  {Colors.CYAN}/rc stop api{Colors.RESET}              Stop the API server
+  {Colors.CYAN}/rc stop all{Colors.RESET}              Stop all running services
+""")
+
+    def _rc_show_status(self) -> None:
+        """Display status of all remote services."""
+        if not self._remote_services:
+            print(f"\n  {Colors.DIM}No remote services running.{Colors.RESET}")
+            print(f"  {Colors.DIM}Use /rc start api|telegram|slack|all to start.{Colors.RESET}\n")
+            return
+
+        print(f"\n{Colors.BOLD}  Remote Services:{Colors.RESET}\n")
+        for name, svc in self._remote_services.items():
+            elapsed = time.time() - svc["started_at"]
+            mins = int(elapsed // 60)
+            secs = int(elapsed % 60)
+            task = svc["task"]
+            if task.done():
+                status = f"{Colors.RED}● stopped{Colors.RESET}"
+            else:
+                status = f"{Colors.GREEN}● running{Colors.RESET}"
+            info = svc.get("info", "")
+            print(f"    {status} {Colors.CYAN}{name}{Colors.RESET}  {info}  ({mins}m {secs}s)")
+        print()
+
+    async def _rc_start(self, arg: str) -> None:
+        """Start a remote service."""
+        parts = arg.strip().split(None, 1)
+        service = parts[0].lower() if parts else ""
+        extra = parts[1].strip() if len(parts) > 1 else ""
+
+        if not service:
+            print(f"  {Colors.RED}Specify a service: api, telegram, slack, or all{Colors.RESET}\n")
+            return
+
+        if service == "all":
+            await self._rc_start("api" + (" " + extra if extra else ""))
+            await self._rc_start("telegram")
+            await self._rc_start("slack")
+            return
+
+        if service in self._remote_services:
+            task = self._remote_services[service]["task"]
+            if not task.done():
+                print(f"  {Colors.YELLOW}⚠ {service} is already running.{Colors.RESET}\n")
+                return
+
+        if service == "api":
+            await self._start_api_server(extra)
+        elif service == "telegram":
+            await self._start_telegram_bot(extra)
+        elif service == "slack":
+            await self._start_slack_bot(extra)
+        else:
+            print(f"  {Colors.RED}Unknown service '{service}'. Use api, telegram, slack, or all.{Colors.RESET}\n")
+
+    async def _start_api_server(self, port_arg: str = "") -> None:
+        """Launch the API server as a background task."""
+        port = int(port_arg) if port_arg.isdigit() else 8000
+        try:
+            from .api import RestAPIInterface
+        except ImportError:
+            print(f"  {Colors.RED}FastAPI not installed. Run: pip install fastapi uvicorn websockets{Colors.RESET}\n")
+            return
+
+        factory = self._agent_factory
+        if not factory:
+            print(f"  {Colors.RED}No agent factory available. Start with --mode cli to enable remote control.{Colors.RESET}\n")
+            return
+
+        api = RestAPIInterface(
+            agent=self.agent,
+            agent_factory=factory,
+            host="0.0.0.0",
+            port=port,
+        )
+
+        task = asyncio.create_task(api.run())
+        self._remote_services["api"] = {
+            "task": task,
+            "started_at": time.time(),
+            "info": f"http://localhost:{port}",
+            "instance": api,
+        }
+        # Give server a moment to start
+        await asyncio.sleep(0.5)
+        print(f"  {Colors.GREEN}✓ API server started on http://localhost:{port}{Colors.RESET}")
+        print(f"  {Colors.DIM}  Dashboard: http://localhost:{port}/{Colors.RESET}\n")
+
+    async def _start_telegram_bot(self, token_arg: str = "") -> None:
+        """Launch the Telegram bot as a background task."""
+        token = token_arg or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        if not token:
+            print(f"  {Colors.YELLOW}⚠ No Telegram token found.{Colors.RESET}")
+            print(f"  {Colors.DIM}  Set TELEGRAM_BOT_TOKEN env var or: /rc start telegram <token>{Colors.RESET}\n")
+            return
+        try:
+            from .telegram_bot import TelegramBotInterface
+        except ImportError:
+            print(f"  {Colors.RED}python-telegram-bot not installed. Run: pip install python-telegram-bot{Colors.RESET}\n")
+            return
+
+        factory = self._agent_factory
+        if not factory:
+            print(f"  {Colors.RED}No agent factory available.{Colors.RESET}\n")
+            return
+
+        persist = os.path.join(self._workspace, ".cowork", "telegram_sessions.json")
+        bot = TelegramBotInterface(
+            agent=self.agent,
+            token=token,
+            agent_factory=factory,
+            persist_path=persist,
+        )
+
+        task = asyncio.create_task(bot.run())
+        self._remote_services["telegram"] = {
+            "task": task,
+            "started_at": time.time(),
+            "info": "polling",
+            "instance": bot,
+        }
+        await asyncio.sleep(0.5)
+        print(f"  {Colors.GREEN}✓ Telegram bot started.{Colors.RESET}\n")
+
+    async def _start_slack_bot(self, tokens_arg: str = "") -> None:
+        """Launch the Slack bot as a background task."""
+        bot_token = os.environ.get("SLACK_BOT_TOKEN", "")
+        app_token = os.environ.get("SLACK_APP_TOKEN", "")
+        if not bot_token or not app_token:
+            print(f"  {Colors.YELLOW}⚠ Slack tokens not found.{Colors.RESET}")
+            print(f"  {Colors.DIM}  Set SLACK_BOT_TOKEN and SLACK_APP_TOKEN env vars.{Colors.RESET}\n")
+            return
+        try:
+            from .slack_bot import SlackBotInterface
+        except ImportError:
+            print(f"  {Colors.RED}slack-bolt not installed. Run: pip install slack-bolt{Colors.RESET}\n")
+            return
+
+        factory = self._agent_factory
+        if not factory:
+            print(f"  {Colors.RED}No agent factory available.{Colors.RESET}\n")
+            return
+
+        bot = SlackBotInterface(
+            agent=self.agent,
+            bot_token=bot_token,
+            app_token=app_token,
+            agent_factory=factory,
+        )
+
+        task = asyncio.create_task(bot.run())
+        self._remote_services["slack"] = {
+            "task": task,
+            "started_at": time.time(),
+            "info": "socket mode",
+            "instance": bot,
+        }
+        await asyncio.sleep(0.5)
+        print(f"  {Colors.GREEN}✓ Slack bot started.{Colors.RESET}\n")
+
+    async def _rc_stop(self, arg: str) -> None:
+        """Stop a running remote service."""
+        service = arg.strip().lower()
+        if not service:
+            print(f"  {Colors.RED}Specify a service: api, telegram, slack, or all{Colors.RESET}\n")
+            return
+
+        if service == "all":
+            await self._stop_all_remote()
+            return
+
+        if service not in self._remote_services:
+            print(f"  {Colors.YELLOW}⚠ {service} is not running.{Colors.RESET}\n")
+            return
+
+        svc = self._remote_services.pop(service)
+        task = svc["task"]
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        print(f"  {Colors.GREEN}✓ {service} stopped.{Colors.RESET}\n")
+
+    async def _stop_all_remote(self) -> None:
+        """Stop all running remote services."""
+        if not self._remote_services:
+            print(f"  {Colors.DIM}No remote services running.{Colors.RESET}\n")
+            return
+
+        names = list(self._remote_services.keys())
+        for name in names:
+            svc = self._remote_services.pop(name)
+            task = svc["task"]
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            print(f"  {Colors.GREEN}✓ {name} stopped.{Colors.RESET}")
+        print()
+
     async def run(self) -> None:
         """Main interactive loop."""
         self._running = True
@@ -520,7 +773,7 @@ class CLI:
 
                 # Handle slash commands
                 if user_input.startswith("/"):
-                    handled = self._handle_command(user_input)
+                    handled = await self._handle_command(user_input)
                     if handled:
                         continue
 
