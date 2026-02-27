@@ -90,7 +90,12 @@ class PromptBuilder:
             if skill_prompt:
                 sections.append(skill_prompt)
 
-        # 7. Runtime reminder (active todos, iteration info)
+        # 7. Sprint 11: Memory section (summary + knowledge)
+        memory_section = self._section_memory(ctx)
+        if memory_section:
+            sections.append(memory_section)
+
+        # 8. Runtime reminder (active todos, iteration info)
         reminder = self._section_system_reminder(ctx)
         if reminder:
             sections.append(reminder)
@@ -198,4 +203,38 @@ class PromptBuilder:
             "<system-reminder>\n"
             + "\n\n".join(parts)
             + "\n</system-reminder>"
+        )
+
+    def _section_memory(self, context: dict) -> str:
+        """
+        Sprint 11: Inject <memory> XML section with conversation summary
+        and cross-session knowledge entries.
+
+        Gives the LLM context from older (pruned) conversation turns and
+        persistent facts/preferences/decisions stored in the knowledge store.
+        """
+        parts = []
+
+        # Sliding window summary (from ConversationSummarizer)
+        summary = context.get("memory_summary", "")
+        if summary:
+            parts.append(f"<summary>\n{summary}\n</summary>")
+
+        # Cross-session knowledge entries
+        entries = context.get("knowledge_entries", [])
+        if entries:
+            entry_lines = []
+            for e in entries:
+                entry_lines.append(f"  [{e.category}] {e.key}: {e.value}")
+            parts.append(
+                "<knowledge>\n" + "\n".join(entry_lines) + "\n</knowledge>"
+            )
+
+        if not parts:
+            return ""
+
+        return (
+            "<memory>\n"
+            + "\n".join(parts)
+            + "\n</memory>"
         )

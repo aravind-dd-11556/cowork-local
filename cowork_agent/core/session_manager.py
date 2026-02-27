@@ -213,6 +213,12 @@ class SessionManager:
             "timestamp": message.timestamp,
         }
 
+        # Sprint 11: Persist memory-related fields
+        if message.importance_score is not None:
+            data["importance_score"] = message.importance_score
+        if message.memory_id is not None:
+            data["memory_id"] = message.memory_id
+
         if message.tool_calls:
             data["tool_calls"] = [
                 {"name": tc.name, "tool_id": tc.tool_id, "input": tc.input}
@@ -262,4 +268,7 @@ class SessionManager:
             tool_calls=tool_calls,
             tool_results=tool_results,
             timestamp=data.get("timestamp", 0.0),
+            # Sprint 11: Restore memory-related fields
+            importance_score=data.get("importance_score"),
+            memory_id=data.get("memory_id"),
         )

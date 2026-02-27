@@ -55,6 +55,9 @@ class Message:
     tool_calls: Optional[list[ToolCall]] = None
     tool_results: Optional[list[ToolResult]] = None
     timestamp: float = field(default_factory=time.time)
+    # Sprint 11: Advanced Memory System
+    importance_score: Optional[float] = None  # 0.0–1.0 weight for pruning
+    memory_id: Optional[str] = None           # Unique ID for cross-session tracking
 
 
 @dataclass

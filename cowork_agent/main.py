@@ -287,6 +287,21 @@ def main() -> None:
     # Create prompt builder with skill registry
     prompt_builder = PromptBuilder(config._data, skill_registry=skill_registry)
 
+    # ── Sprint 11: Advanced Memory System ─────────────────────────────
+    from .core.conversation_summarizer import ConversationSummarizer
+    from .core.knowledge_store import KnowledgeStore
+    from .tools.memory_tool import MemoryTool
+
+    knowledge_store = KnowledgeStore(workspace_dir=workspace)
+    summarizer = ConversationSummarizer()
+
+    # Register memory tool
+    registry.register(MemoryTool(knowledge_store=knowledge_store))
+
+    logger.info(
+        f"Memory system initialized: {knowledge_store.size} knowledge entries loaded"
+    )
+
     # Create agent with safety checker, context manager, skill registry, and plan manager
     agent = Agent(
         provider=provider,
@@ -297,6 +312,9 @@ def main() -> None:
         max_context_tokens=config.get("llm.max_tokens", 32000) * 2,  # context > output
         skill_registry=skill_registry,
         plan_manager=plan_manager,
+        # Sprint 11: Memory components
+        summarizer=summarizer,
+        knowledge_store=knowledge_store,
     )
 
     # ── Sprint 7: Persistence & State ─────────────────────────────

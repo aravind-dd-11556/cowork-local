@@ -22,6 +22,9 @@ from .plan_mode import PlanManager
 from .token_tracker import TokenTracker, TokenUsage, BudgetExceededError
 from .execution_tracer import ExecutionTracer
 from .tool_permissions import ToolPermissionManager
+# Sprint 11: Advanced Memory System
+from .conversation_summarizer import ConversationSummarizer
+from .knowledge_store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,9 @@ class Agent:
         skill_registry: Optional[SkillRegistry] = None,
         plan_manager: Optional[PlanManager] = None,
         token_tracker: Optional[TokenTracker] = None,
+        # Sprint 11: Advanced Memory System
+        summarizer: Optional[ConversationSummarizer] = None,
+        knowledge_store: Optional[KnowledgeStore] = None,
     ):
         self.provider = provider
         self.registry = registry
@@ -72,7 +78,19 @@ class Agent:
 
         # Safety & context management
         self.safety = SafetyChecker(workspace_dir=workspace_dir)
-        self.context_mgr = ContextManager(max_context_tokens=max_context_tokens)
+
+        # Sprint 11: Memory components
+        self.summarizer = summarizer or ConversationSummarizer()
+        self.knowledge_store = knowledge_store
+        self.context_mgr = ContextManager(
+            max_context_tokens=max_context_tokens,
+            summarizer=self.summarizer,
+        )
+
+        # Sprint 11: Sliding window summary
+        self._sliding_summary: Optional[str] = None
+        self._summary_turn_count: int = 0
+        self._SUMMARY_UPDATE_INTERVAL: int = 5  # Update every 5 user turns
 
         # Conversation memory
         self._messages: list[Message] = []
@@ -99,6 +117,8 @@ class Agent:
         """Reset conversation memory."""
         self._messages.clear()
         self._iteration = 0
+        self._sliding_summary = None
+        self._summary_turn_count = 0
 
     # Maximum retries for recovery handlers before giving up
     MAX_TRUNCATION_RETRIES = 2
@@ -873,11 +893,40 @@ class Agent:
 
         yield f"\n[Agent reached maximum iterations ({self.max_iterations}).]"
 
+    # ── Sprint 11: Sliding summary ─────────────────────────
+
+    def _maybe_update_summary(self) -> None:
+        """Update the sliding summary every N user turns."""
+        user_turns = sum(1 for m in self._messages if m.role == "user")
+        if user_turns <= self._summary_turn_count:
+            return
+        if (user_turns - self._summary_turn_count) >= self._SUMMARY_UPDATE_INTERVAL:
+            recent = self._messages[-20:]  # Summarize last 20 messages
+            self._sliding_summary = self.summarizer.update_sliding_summary(
+                self._sliding_summary or "", recent
+            )
+            self._summary_turn_count = user_turns
+            logger.debug(f"Sliding summary updated at turn {user_turns}")
+
     def _build_context(self) -> dict:
         """Build runtime context for the prompt builder."""
+        # Sprint 11: Update sliding summary if interval reached
+        self._maybe_update_summary()
+
         ctx = {
             "iteration": self._iteration,
         }
+
+        # Sprint 11: Memory context
+        if self._sliding_summary:
+            ctx["memory_summary"] = self._sliding_summary
+        if self.knowledge_store and self.knowledge_store.size > 0:
+            # Inject recent knowledge entries for the LLM to reference
+            entries = []
+            for cat in ("facts", "preferences", "decisions"):
+                entries.extend(self.knowledge_store.recall_all(cat)[:5])
+            if entries:
+                ctx["knowledge_entries"] = entries
 
         # Get todos from the todo tool if available (safe — won't crash if missing)
         try:
