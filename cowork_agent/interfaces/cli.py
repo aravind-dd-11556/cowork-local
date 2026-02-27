@@ -231,13 +231,41 @@ class CLI:
         return icons.get(name, "🔨")
 
     def _setup_readline(self) -> None:
-        """Configure readline for command history."""
+        """Configure readline for command history and key bindings."""
         try:
             readline.set_history_length(1000)
+
+            # Enable standard key bindings (arrow keys, Home/End, etc.)
+            readline.parse_and_bind("set editing-mode emacs")
+            # Tab completion for /commands
+            readline.parse_and_bind("tab: complete")
+            readline.set_completer(self._readline_completer)
+            readline.set_completer_delims(" \t\n")
+
+            # Ensure history directory exists
+            history_dir = os.path.dirname(self.history_file)
+            if history_dir and not os.path.exists(history_dir):
+                os.makedirs(history_dir, exist_ok=True)
+
             if os.path.exists(self.history_file):
                 readline.read_history_file(self.history_file)
         except Exception:
             pass
+
+    def _readline_completer(self, text: str, state: int) -> Optional[str]:
+        """Tab-complete /commands."""
+        commands = [
+            "/help", "/clear", "/history", "/todos", "/config",
+            "/health", "/sessions", "/snapshot", "/snapshots",
+            "/metrics", "/analytics", "/remote-control", "/rc", "/exit",
+        ]
+        if text.startswith("/"):
+            matches = [c for c in commands if c.startswith(text)]
+        else:
+            matches = []
+        if state < len(matches):
+            return matches[state]
+        return None
 
     def _save_readline(self) -> None:
         """Save command history."""
@@ -803,9 +831,41 @@ class CLI:
             print(f"  {Colors.GREEN}✓ {name} stopped.{Colors.RESET}")
         print()
 
-    def _blocking_input(self, prompt: str) -> str:
-        """Read input from stdin (runs in thread to avoid blocking event loop)."""
-        return input(prompt).strip()
+    @staticmethod
+    def _rl_prompt(text: str) -> str:
+        """Wrap ANSI escape codes with readline invisible markers.
+
+        Readline counts every character for cursor positioning. Without
+        \\001 / \\002 wrappers around non-printing ANSI escapes, it
+        miscalculates the cursor column and garbles the line when the
+        user presses arrow keys or edits text.
+        """
+        import re
+        # Replace each ANSI escape sequence with \001...\002 wrapped version
+        return re.sub(
+            r'(\033\[[0-9;]*m)',
+            lambda m: f'\001{m.group(1)}\002',
+            text,
+        )
+
+    async def _async_input(self, prompt: str) -> str:
+        """Read user input without blocking the async event loop.
+
+        Readline (arrow keys, history, tab completion) only works on the
+        main thread.  We run input() in a *dedicated* thread so the event
+        loop can continue processing background tasks (Slack bot, API server)
+        while still preserving full readline functionality.
+
+        The key insight: run_in_executor gives us a Future that the event
+        loop awaits, so background coroutines keep running.  And because
+        we always use the *same* thread (the default executor), readline's
+        terminal state stays consistent.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: input(prompt).strip(),
+        )
 
     async def run(self) -> None:
         """Main interactive loop."""
@@ -813,16 +873,14 @@ class CLI:
         self._setup_readline()
         self._print_banner()
 
-        loop = asyncio.get_event_loop()
+        # Build the prompt once with proper readline escape wrapping
+        prompt = self._rl_prompt(
+            f"{Colors.BOLD}{Colors.BLUE}You ▸ {Colors.RESET}"
+        )
 
         while self._running:
             try:
-                # Get user input in a thread so background tasks (Slack, API) keep running
-                user_input = await loop.run_in_executor(
-                    None,
-                    self._blocking_input,
-                    f"{Colors.BOLD}{Colors.BLUE}You ▸ {Colors.RESET}",
-                )
+                user_input = await self._async_input(prompt)
 
                 if not user_input:
                     continue
@@ -844,7 +902,8 @@ class CLI:
                     else:
                         response = await self.agent.run(user_input)
                         # Display response
-                        print(f"\n{Colors.BOLD}{Colors.GREEN}Agent ▸{Colors.RESET} {response}\n")
+                        with _stdout_lock:
+                            print(f"\n{Colors.BOLD}{Colors.GREEN}Agent ▸{Colors.RESET} {response}\n")
                 finally:
                     self._spinner.stop()
 
@@ -859,5 +918,8 @@ class CLI:
             except Exception as e:
                 print(f"\n  {Colors.RED}Error: {str(e)}{Colors.RESET}\n")
 
+        # Stop any running remote services before exit
+        if self._remote_services:
+            await self._stop_all_remote()
         self._save_readline()
         print(f"\n{Colors.DIM}Session ended.{Colors.RESET}")
