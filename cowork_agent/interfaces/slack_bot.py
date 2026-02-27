@@ -94,13 +94,15 @@ class SlackBotInterface(BaseInterface):
         subtype = event.get("subtype", "")
 
         if not text or not user_id:
+            print(f"[Slack] Skipping: no text or user_id (text={text!r}, user={user_id!r})")
             return
 
         # Skip bot messages and message edits/deletes
         if event.get("bot_id") or subtype in ("bot_message", "message_changed", "message_deleted"):
+            print(f"[Slack] Skipping bot/edit message (bot_id={event.get('bot_id')}, subtype={subtype})")
             return
 
-        logger.info(f"Slack message from {user_id}: {text[:50]}...")
+        print(f"[Slack] Processing message from {user_id}: {text[:80]}")
         agent = self._get_agent(user_id)
 
         # Post "thinking" message
@@ -288,44 +290,70 @@ class SlackBotInterface(BaseInterface):
                 "Install it with: pip install slack-bolt"
             )
 
+        print("[Slack] Initializing bot...")
+
+        # Verify tokens before connecting
+        try:
+            from slack_sdk.web.async_client import AsyncWebClient
+            test_client = AsyncWebClient(token=self.bot_token)
+            auth = await test_client.auth_test()
+            bot_name = auth.get("user", "unknown")
+            team = auth.get("team", "unknown")
+            print(f"[Slack] Authenticated as @{bot_name} in workspace '{team}'")
+        except Exception as e:
+            print(f"[Slack] ERROR: Auth failed — {e}")
+            print(f"[Slack] Check your SLACK_BOT_TOKEN (starts with xoxb-)")
+            raise
+
         self._bolt_app = AsyncApp(token=self.bot_token)
 
         # Register handlers
         @self._bolt_app.event("message")
-        async def handle_message(body, say, client, logger: logging.Logger):
+        async def handle_message(event, say, client):
             """Handle incoming messages."""
-            logger.info("Received message event")
+            print(f"[Slack] >>> Message event received: {event}")
             try:
+                # Build body dict for our handler
+                body = {"event": event}
                 await self._handle_message(body, say, client)
             except Exception as e:
-                logger.error(f"Error handling message: {e}", exc_info=True)
+                print(f"[Slack] ERROR in message handler: {e}")
+                import traceback
+                traceback.print_exc()
 
         @self._bolt_app.action(_re.compile(r"^q_.*"))
         async def handle_action(body, ack, client):
             """Handle Block Kit button presses."""
+            print(f"[Slack] >>> Action received")
             await self._handle_action(body, ack, client)
 
-        # Catch-all for unhandled events (debugging)
         @self._bolt_app.event("app_mention")
-        async def handle_mention(body, say):
+        async def handle_mention(event, say, client):
             """Handle @mentions in channels."""
-            event = body.get("event", {})
+            print(f"[Slack] >>> Mention event received: {event}")
             text = event.get("text", "")
-            # Strip the bot mention from text
             import re
             text = re.sub(r"<@[A-Z0-9]+>\s*", "", text).strip()
             if text:
-                await self._handle_message(body, say, None)
+                body = {"event": {**event, "text": text}}
+                try:
+                    await self._handle_message(body, say, client)
+                except Exception as e:
+                    print(f"[Slack] ERROR in mention handler: {e}")
+                    import traceback
+                    traceback.print_exc()
 
-        logger.info("Starting Slack bot (Socket Mode)...")
+        print("[Slack] Connecting via Socket Mode...")
         handler = AsyncSocketModeHandler(self._bolt_app, self.app_token)
         await handler.connect_async()
-        logger.info("Slack bot connected via Socket Mode")
+        print("[Slack] Connected! Bot is now listening for messages.")
+        print("[Slack] Send a DM to the bot or @mention it in a channel.")
+
         # Keep alive — wait forever until cancelled
         try:
             while True:
                 await asyncio.sleep(1)
         except asyncio.CancelledError:
-            logger.info("Slack bot shutting down...")
+            print("[Slack] Shutting down...")
             await handler.close_async()
             raise

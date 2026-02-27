@@ -755,18 +755,26 @@ class CLI:
             print(f"  {Colors.GREEN}✓ {name} stopped.{Colors.RESET}")
         print()
 
+    def _blocking_input(self, prompt: str) -> str:
+        """Read input from stdin (runs in thread to avoid blocking event loop)."""
+        return input(prompt).strip()
+
     async def run(self) -> None:
         """Main interactive loop."""
         self._running = True
         self._setup_readline()
         self._print_banner()
 
+        loop = asyncio.get_event_loop()
+
         while self._running:
             try:
-                # Get user input
-                user_input = input(
-                    f"{Colors.BOLD}{Colors.BLUE}You ▸ {Colors.RESET}"
-                ).strip()
+                # Get user input in a thread so background tasks (Slack, API) keep running
+                user_input = await loop.run_in_executor(
+                    None,
+                    self._blocking_input,
+                    f"{Colors.BOLD}{Colors.BLUE}You ▸ {Colors.RESET}",
+                )
 
                 if not user_input:
                     continue
