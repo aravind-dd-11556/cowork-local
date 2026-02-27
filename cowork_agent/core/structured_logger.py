@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -229,8 +230,9 @@ def setup_structured_logging(
     # Remove existing handlers
     root.handlers.clear()
 
-    # Create handler
-    handler = logging.StreamHandler()
+    # Create handler — explicitly write to stderr so log messages never
+    # interleave with streamed response text on stdout.
+    handler = logging.StreamHandler(stream=sys.stderr)
     if json_mode:
         handler.setFormatter(StructuredFormatter(datefmt="%Y-%m-%dT%H:%M:%S"))
     else:

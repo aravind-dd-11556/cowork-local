@@ -103,6 +103,11 @@ class OllamaProvider(BaseLLMProvider):
 
         full_content = ""
 
+        # Buffer a few chunks before yielding so we can detect tool_calls
+        # JSON blocks early, before they reach the terminal.  Without this,
+        # the opening `{"tool_calls` characters leak to stdout as garbled text.
+        _BUFFER_WATERMARK = 40  # chars to buffer before flushing
+
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 async with client.stream(
@@ -122,6 +127,9 @@ class OllamaProvider(BaseLLMProvider):
                     },
                 ) as stream:
                     done_reason = "unknown"
+                    pending_buffer = ""   # text waiting to be yielded
+                    tool_json_started = False  # once True, stop yielding
+
                     async for line in stream.aiter_lines():
                         if not line.strip():
                             continue
@@ -130,17 +138,53 @@ class OllamaProvider(BaseLLMProvider):
                         except json.JSONDecodeError:
                             continue
 
-                        # Each streamed chunk has message.content
                         chunk = data.get("message", {}).get("content", "")
                         if chunk:
                             full_content += chunk
-                            # Only yield if we haven't started a tool_calls JSON block
-                            if '"tool_calls"' not in full_content:
-                                yield chunk
+
+                            if tool_json_started:
+                                # Already inside a tool_calls block — don't yield
+                                pass
+                            else:
+                                pending_buffer += chunk
+
+                                # Check if we've entered a tool_calls JSON block
+                                if '"tool_calls"' in full_content or '```json' in pending_buffer:
+                                    # Check more carefully — does this look like a tool call?
+                                    if '"tool_calls"' in full_content:
+                                        tool_json_started = True
+                                        # Don't yield anything in the pending buffer
+                                        # that is part of the JSON block.  Find the
+                                        # start of the JSON block and yield only the
+                                        # text before it.
+                                        json_markers = ['```json', '{"tool_calls', "{'tool_calls"]
+                                        earliest = len(full_content)
+                                        for marker in json_markers:
+                                            idx = full_content.find(marker)
+                                            if idx >= 0 and idx < earliest:
+                                                earliest = idx
+                                        # Calculate how much of the buffer is safe text
+                                        safe_chars = earliest - (len(full_content) - len(pending_buffer))
+                                        if safe_chars > 0:
+                                            yield pending_buffer[:safe_chars]
+                                        pending_buffer = ""
+                                        continue
+
+                                # Flush safe text when buffer is large enough
+                                if len(pending_buffer) >= _BUFFER_WATERMARK:
+                                    # Keep a small tail in case a JSON block starts mid-buffer
+                                    safe = pending_buffer[:-20]
+                                    pending_buffer = pending_buffer[-20:]
+                                    if safe:
+                                        yield safe
 
                         if data.get("done", False):
                             done_reason = data.get("done_reason", "stop")
                             break
+
+                    # Flush remaining buffered text (only if no tool_calls detected)
+                    if pending_buffer and not tool_json_started:
+                        yield pending_buffer
 
             # Parse the full response for tool calls
             response = self._parse_response(full_content)

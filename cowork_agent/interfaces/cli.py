@@ -5,6 +5,7 @@ Supports /commands, streaming display, tool execution indicators, and todo widge
 
 from __future__ import annotations
 import asyncio
+import logging
 import os
 import sys
 import signal
@@ -39,6 +40,11 @@ class Colors:
     BG_DARK = "\033[48;5;236m"
 
 
+# Thread-safe stdout lock — prevents spinner, streaming, tool callbacks
+# and logging from interleaving on the terminal.
+_stdout_lock = threading.Lock()
+
+
 class Spinner:
     """A simple terminal spinner that runs in a background thread."""
 
@@ -48,37 +54,50 @@ class Spinner:
         self._message = message
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._stopped = threading.Event()  # Signals spinner thread has fully exited
 
     def start(self, message: str = None) -> None:
         if message:
             self._message = message
         if self._running:
             return
+        self._stopped.clear()
         self._running = True
         self._thread = threading.Thread(target=self._spin, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
+        if not self._running and self._thread is None:
+            return
         self._running = False
         if self._thread:
-            self._thread.join(timeout=1)
+            self._thread.join(timeout=2)
             self._thread = None
+        # Wait for the thread to signal it's truly done writing
+        self._stopped.wait(timeout=1)
         # Clear the spinner line
-        sys.stdout.write(f"\r{' ' * 60}\r")
-        sys.stdout.flush()
+        with _stdout_lock:
+            sys.stdout.write(f"\r{' ' * 80}\r")
+            sys.stdout.flush()
 
     def _spin(self) -> None:
         idx = 0
         start = time.time()
-        while self._running:
-            elapsed = int(time.time() - start)
-            frame = self.FRAMES[idx % len(self.FRAMES)]
-            sys.stdout.write(
-                f"\r  {Colors.DIM}{frame} {self._message}... ({elapsed}s){Colors.RESET}"
-            )
-            sys.stdout.flush()
-            idx += 1
-            time.sleep(0.1)
+        try:
+            while self._running:
+                elapsed = int(time.time() - start)
+                frame = self.FRAMES[idx % len(self.FRAMES)]
+                with _stdout_lock:
+                    if not self._running:
+                        break
+                    sys.stdout.write(
+                        f"\r  {Colors.DIM}{frame} {self._message}... ({elapsed}s){Colors.RESET}"
+                    )
+                    sys.stdout.flush()
+                idx += 1
+                time.sleep(0.1)
+        finally:
+            self._stopped.set()
 
 
 class CLI:
@@ -117,6 +136,11 @@ class CLI:
         # Remote control state
         self._remote_services: dict[str, dict] = {}  # name -> {task, started_at, info}
 
+        # Track whether we're in a streaming response (tool callbacks
+        # should NOT restart the spinner during streaming — the stream
+        # loop itself drives the next LLM call).
+        self._is_streaming = False
+
         # Wire up callbacks
         self.agent.on_tool_start = self._on_tool_start
         self.agent.on_tool_end = self._on_tool_end
@@ -124,13 +148,14 @@ class CLI:
 
     def _on_tool_start(self, call: ToolCall) -> None:
         """Display tool execution indicator."""
-        self._spinner.stop()  # Stop spinner before printing
+        self._spinner.stop()
         self._tool_timers[call.tool_id] = time.time()
         icon = self._tool_icon(call.name)
-        print(
-            f"  {Colors.DIM}{icon} Executing {Colors.CYAN}{call.name}"
-            f"{Colors.RESET}{Colors.DIM}...{Colors.RESET}"
-        )
+        with _stdout_lock:
+            print(
+                f"  {Colors.DIM}{icon} Executing {Colors.CYAN}{call.name}"
+                f"{Colors.RESET}{Colors.DIM}...{Colors.RESET}"
+            )
 
     def _on_tool_end(self, call: ToolCall, result: ToolResult) -> None:
         """Display tool result status with timing via RichOutput."""
@@ -140,19 +165,25 @@ class CLI:
         duration_ms = (time.time() - start) * 1000 if start else 0
         output_lines = len(result.output.split("\n")) if result.output else 0
         # Use RichOutput for formatted tool result line
-        print(self._rich.tool_result(call.name, result.success, duration_ms, output_lines))
-        if not result.success and result.error:
-            print(self._rich.error(result.error))
-        # Restart spinner — agent will call LLM again after tool results
-        self._spinner.start("Thinking")
+        with _stdout_lock:
+            print(self._rich.tool_result(call.name, result.success, duration_ms, output_lines))
+            if not result.success and result.error:
+                print(self._rich.error(result.error))
+        # Only restart spinner if NOT in a streaming response — during
+        # streaming the stream loop drives the next LLM call directly
+        # and a spinner would race with the streamed text.
+        if not self._is_streaming:
+            self._spinner.start("Thinking")
 
     def _on_status(self, message: str) -> None:
         """Display agent status updates (retries, nudges, etc.)."""
         self._spinner.stop()
-        print(
-            f"  {Colors.YELLOW}⟳ {message}{Colors.RESET}"
-        )
-        self._spinner.start("Retrying")
+        with _stdout_lock:
+            print(
+                f"  {Colors.YELLOW}⟳ {message}{Colors.RESET}"
+            )
+        if not self._is_streaming:
+            self._spinner.start("Retrying")
 
     def ask_user_handler(self, question: str, options: list[str]) -> str:
         """
@@ -160,7 +191,8 @@ class CLI:
         Called from the AskUser tool via callback.
         """
         self._spinner.stop()
-        print(f"\n  {Colors.BOLD}{Colors.MAGENTA}❓ Agent asks:{Colors.RESET} {question}")
+        with _stdout_lock:
+            print(f"\n  {Colors.BOLD}{Colors.MAGENTA}❓ Agent asks:{Colors.RESET} {question}")
 
         if options:
             for i, opt in enumerate(options, 1):
@@ -476,17 +508,33 @@ class CLI:
     async def _run_streaming(self, user_input: str) -> str:
         """Run agent with streaming display — print tokens as they arrive."""
         self._spinner.stop()
-        sys.stdout.write(f"\n{Colors.BOLD}{Colors.GREEN}Agent ▸{Colors.RESET} ")
-        sys.stdout.flush()
+        self._is_streaming = True
+
+        # Suppress noisy logging during streaming so debug logs don't
+        # interleave with the response text on the terminal.
+        root_logger = logging.getLogger()
+        saved_level = root_logger.level
+        root_logger.setLevel(logging.WARNING)
+
+        with _stdout_lock:
+            sys.stdout.write(f"\n{Colors.BOLD}{Colors.GREEN}Agent ▸{Colors.RESET} ")
+            sys.stdout.flush()
 
         full_response = ""
-        async for chunk in self.agent.run_stream(user_input):
-            sys.stdout.write(chunk)
-            sys.stdout.flush()
-            full_response += chunk
+        try:
+            async for chunk in self.agent.run_stream(user_input):
+                with _stdout_lock:
+                    sys.stdout.write(chunk)
+                    sys.stdout.flush()
+                full_response += chunk
+        finally:
+            # Restore logging level and streaming flag
+            root_logger.setLevel(saved_level)
+            self._is_streaming = False
 
-        sys.stdout.write("\n")
-        sys.stdout.flush()
+        with _stdout_lock:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
         return full_response
 
     async def _show_health(self) -> None:
