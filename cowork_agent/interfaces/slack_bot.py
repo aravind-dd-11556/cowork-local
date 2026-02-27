@@ -91,22 +91,28 @@ class SlackBotInterface(BaseInterface):
         channel = event.get("channel", "")
         text = event.get("text", "")
         thread_ts = event.get("thread_ts") or event.get("ts")
+        subtype = event.get("subtype", "")
 
         if not text or not user_id:
             return
 
-        # Skip bot messages
-        if event.get("bot_id"):
+        # Skip bot messages and message edits/deletes
+        if event.get("bot_id") or subtype in ("bot_message", "message_changed", "message_deleted"):
             return
 
+        logger.info(f"Slack message from {user_id}: {text[:50]}...")
         agent = self._get_agent(user_id)
 
         # Post "thinking" message
-        thinking = say(
-            text=":hourglass_flowing_sand: Processing...",
-            thread_ts=thread_ts,
-        )
-        thinking_ts = thinking.get("ts", "")
+        try:
+            thinking = await say(
+                text=":hourglass_flowing_sand: Processing...",
+                thread_ts=thread_ts,
+            )
+            thinking_ts = thinking.get("ts", "") if thinking else ""
+        except Exception as e:
+            logger.error(f"Failed to post thinking message: {e}")
+            thinking_ts = ""
 
         # Wire tool callbacks for this message
         tool_msgs: list[str] = []
@@ -128,33 +134,43 @@ class SlackBotInterface(BaseInterface):
                 response_parts.append(chunk)
             response = "".join(response_parts)
         except Exception as e:
+            logger.error(f"Agent error: {e}")
             response = f"Error: {e}"
 
         # Post tool summary in thread
         if tool_msgs:
-            say(
-                text="\n".join(tool_msgs),
-                thread_ts=thread_ts,
-            )
+            try:
+                await say(
+                    text="\n".join(tool_msgs),
+                    thread_ts=thread_ts,
+                )
+            except Exception as e:
+                logger.error(f"Failed to post tool summary: {e}")
 
         # Update thinking message with response
         if response:
             parts = self.split_message(response)
             try:
-                client.chat_update(
+                await client.chat_update(
                     channel=channel,
                     ts=thinking_ts,
                     text=parts[0],
                 )
             except Exception:
-                say(text=parts[0], thread_ts=thread_ts)
+                try:
+                    await say(text=parts[0], thread_ts=thread_ts)
+                except Exception as e:
+                    logger.error(f"Failed to post response: {e}")
 
             # Additional parts in thread
             for part in parts[1:]:
-                say(text=part, thread_ts=thread_ts)
+                try:
+                    await say(text=part, thread_ts=thread_ts)
+                except Exception as e:
+                    logger.error(f"Failed to post part: {e}")
         else:
             try:
-                client.chat_update(
+                await client.chat_update(
                     channel=channel,
                     ts=thinking_ts,
                     text="(No response from agent)",
@@ -190,7 +206,7 @@ class SlackBotInterface(BaseInterface):
             ts = body.get("message", {}).get("ts", "")
             original_text = body.get("message", {}).get("text", "")
             if channel and ts:
-                client.chat_update(
+                await client.chat_update(
                     channel=channel,
                     ts=ts,
                     text=f"{original_text}\n\nSelected: *{value}*",
