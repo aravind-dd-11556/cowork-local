@@ -66,6 +66,9 @@ class GrepTool(BaseTool):
         self._default_dir = resolved if os.path.isdir(resolved) else os.getcwd()
         self._has_rg = shutil.which("rg") is not None
 
+    # SEC-HIGH-2: Cap pattern length to mitigate ReDoS on the Python re fallback
+    MAX_PATTERN_LENGTH = 1000
+
     async def execute(
         self,
         pattern: str,
@@ -77,6 +80,20 @@ class GrepTool(BaseTool):
         tool_id: str = "",
         **kwargs,
     ) -> "ToolResult":
+        # Validate pattern length to limit ReDoS surface
+        if len(pattern) > self.MAX_PATTERN_LENGTH:
+            return self._error(
+                f"Pattern too long ({len(pattern)} chars). "
+                f"Maximum allowed: {self.MAX_PATTERN_LENGTH}",
+                tool_id,
+            )
+
+        # Validate regex compiles before executing (fast fail)
+        try:
+            re.compile(pattern)
+        except re.error as e:
+            return self._error(f"Invalid regex pattern: {e}", tool_id)
+
         search_path = path or self._default_dir
         glob_filter = kwargs.get("glob", "")
         type_filter = kwargs.get("type", "")

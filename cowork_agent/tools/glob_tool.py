@@ -48,11 +48,8 @@ class GlobTool(BaseTool):
             return self._error(f"Not a directory: {search_dir}", tool_id)
 
         try:
-            # Use rglob for ** patterns, glob otherwise
-            if "**" in pattern:
-                matches = list(search_dir.glob(pattern))
-            else:
-                matches = list(search_dir.glob(pattern))
+            # pathlib.glob() handles ** patterns natively
+            matches = list(search_dir.glob(pattern))
 
             # Filter to files only (skip directories)
             files = [m for m in matches if m.is_file()]

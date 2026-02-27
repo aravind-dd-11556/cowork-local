@@ -1,13 +1,18 @@
 """
-TodoWrite Tool — In-memory task tracking with pending/in_progress/completed states.
+TodoWrite Tool — Task tracking with pending/in_progress/completed states.
 Mirrors Cowork's TodoWrite tool behavior.
+Supports optional persistence to disk (.cowork/todos.json).
 """
 
 from __future__ import annotations
 import json
+import logging
+import os
 from typing import Optional
 
 from .base import BaseTool
+
+logger = logging.getLogger(__name__)
 
 
 class TodoWriteTool(BaseTool):
@@ -48,8 +53,19 @@ class TodoWriteTool(BaseTool):
         "required": ["todos"],
     }
 
-    def __init__(self):
+    def __init__(self, persist_dir: str = ""):
+        """
+        Args:
+            persist_dir: Directory to save todos.json. If empty, no persistence.
+                         Typically set to workspace_dir/.cowork/
+        """
         self._todos: list[dict] = []
+        self._persist_path = ""
+
+        if persist_dir:
+            os.makedirs(persist_dir, exist_ok=True)
+            self._persist_path = os.path.join(persist_dir, "todos.json")
+            self._load_from_disk()
 
     @property
     def todos(self) -> list[dict]:
@@ -82,8 +98,35 @@ class TodoWriteTool(BaseTool):
             for t in todos
         ]
 
+        # Persist to disk
+        self._save_to_disk()
+
         # Build summary
         return self._success(self._format_summary(), tool_id)
+
+    def _save_to_disk(self) -> None:
+        """Save current todos to disk (if persistence is enabled)."""
+        if not self._persist_path:
+            return
+        try:
+            with open(self._persist_path, "w") as f:
+                json.dump(self._todos, f, indent=2)
+            logger.debug(f"Saved {len(self._todos)} todos to {self._persist_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save todos to disk: {e}")
+
+    def _load_from_disk(self) -> None:
+        """Load todos from disk (if persistence file exists)."""
+        if not self._persist_path or not os.path.exists(self._persist_path):
+            return
+        try:
+            with open(self._persist_path, "r") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                self._todos = data
+                logger.info(f"Loaded {len(self._todos)} todos from {self._persist_path}")
+        except Exception as e:
+            logger.warning(f"Failed to load todos from disk: {e}")
 
     def _format_summary(self) -> str:
         """Format the todo list for display."""

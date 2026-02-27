@@ -42,3 +42,13 @@ ollama_data/
 
 # Misc
 *.log
+
+# Cowork state (user session data)
+.cowork/
+
+# Pytest cache
+.pytest_cache/
+
+# Coverage
+htmlcov/
+.coverage

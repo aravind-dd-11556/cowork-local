@@ -97,12 +97,25 @@ class BashTool(BaseTool):
 
     def _update_cwd(self, command: str):
         """Track cd commands to maintain persistent cwd."""
-        # Simple cd tracking — handles common patterns
-        parts = command.strip().split("&&")
+        import re
+        # Split on && and ; to handle chained commands
+        parts = re.split(r'&&|;', command.strip())
         for part in parts:
             part = part.strip()
-            if part.startswith("cd "):
-                target = part[3:].strip().strip("'\"")
+            # Match: cd, cd /path, cd "path", cd 'path', cd ~, cd ~/path
+            if part == "cd" or part.startswith("cd "):
+                target = part[2:].strip().strip("'\"") if len(part) > 2 else ""
+
+                # Skip unsupported forms: cd -, cd $VAR, cd $(...)
+                if target.startswith('-') or target.startswith('$') or target.startswith('`'):
+                    continue
+
+                # Handle ~ expansion
+                if target == "" or target == "~":
+                    target = os.path.expanduser("~")
+                elif target.startswith("~/"):
+                    target = os.path.expanduser(target)
+
                 if os.path.isabs(target):
                     new_cwd = target
                 else:

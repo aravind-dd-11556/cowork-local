@@ -64,6 +64,8 @@ class AgentResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     stop_reason: Literal["end_turn", "tool_use", "max_tokens", "error"] = "end_turn"
     raw_response: Optional[Any] = None
+    # Sprint 4: Token usage metadata (populated by providers that report it)
+    usage: Optional[dict] = None  # {"input_tokens": N, "output_tokens": N, ...}
 
     @property
     def has_tool_calls(self) -> bool:

@@ -5,7 +5,7 @@ All providers (Ollama, OpenAI, Anthropic) implement this interface.
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from ..models import AgentResponse, Message, ToolSchema
 
@@ -16,10 +16,24 @@ class BaseLLMProvider(ABC):
     def __init__(self, model: str, base_url: Optional[str] = None, api_key: Optional[str] = None, **kwargs):
         self.model = model
         self.base_url = base_url
-        self.api_key = api_key
+        # SEC-MEDIUM-1: Store API key in a non-dunder attribute but mask in repr
+        self._api_key = api_key
         self.temperature = kwargs.get("temperature", 0.7)
         self.max_tokens = kwargs.get("max_tokens", 4096)
         self.timeout = kwargs.get("timeout", 300)
+
+    @property
+    def api_key(self) -> Optional[str]:
+        """Access the API key (property to avoid accidental logging)."""
+        return self._api_key
+
+    def __repr__(self) -> str:
+        """Mask API key in repr to prevent accidental logging."""
+        masked = f"***{self._api_key[-4:]}" if self._api_key and len(self._api_key) > 4 else "***"
+        return (
+            f"{self.__class__.__name__}(model={self.model!r}, "
+            f"api_key={masked!r})"
+        )
 
     @abstractmethod
     async def send_message(
@@ -40,6 +54,32 @@ class BaseLLMProvider(ABC):
             AgentResponse with either text or tool_calls
         """
         pass
+
+    async def send_message_stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolSchema],
+        system_prompt: str,
+    ) -> AsyncIterator[str]:
+        """
+        Stream response tokens from the LLM.
+
+        Yields individual text chunks as they arrive. The final AgentResponse
+        (with parsed tool calls) is available via `last_stream_response` after
+        the iterator is exhausted.
+
+        Default implementation: falls back to non-streaming and yields the full text.
+        Override in subclasses for true streaming.
+        """
+        response = await self.send_message(messages, tools, system_prompt)
+        self._last_stream_response = response
+        if response.text:
+            yield response.text
+
+    @property
+    def last_stream_response(self) -> Optional[AgentResponse]:
+        """Get the full AgentResponse from the last stream call."""
+        return getattr(self, "_last_stream_response", None)
 
     @abstractmethod
     async def health_check(self) -> dict:

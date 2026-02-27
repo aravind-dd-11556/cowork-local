@@ -16,6 +16,12 @@ from typing import Optional
 
 from ..core.agent import Agent
 from ..core.models import ToolCall, ToolResult
+from ..core.health_monitor import HealthMonitor
+from ..core.shutdown_manager import ShutdownManager
+from ..core.agent_session import AgentSessionManager
+from ..core.conversation_store import ConversationStore
+from ..core.state_snapshot import StateSnapshotManager
+from .rich_output import RichOutput
 
 
 # ANSI color codes
@@ -82,11 +88,27 @@ class CLI:
         self,
         agent: Agent,
         history_file: str = "~/.cowork_agent_history",
+        streaming: bool = True,
+        health_monitor: Optional[HealthMonitor] = None,
+        shutdown_manager: Optional[ShutdownManager] = None,
+        agent_session: Optional[AgentSessionManager] = None,
+        conversation_store: Optional[ConversationStore] = None,
+        snapshot_manager: Optional[StateSnapshotManager] = None,
+        usage_analytics=None,
     ):
         self.agent = agent
         self.history_file = os.path.expanduser(history_file)
         self._running = False
         self._spinner = Spinner()
+        self._streaming_enabled = streaming
+        self._health_monitor = health_monitor
+        self._shutdown_manager = shutdown_manager
+        self._agent_session = agent_session
+        self._conversation_store = conversation_store
+        self._snapshot_manager = snapshot_manager
+        self._usage_analytics = usage_analytics
+        self._rich = RichOutput(width=100)
+        self._tool_timers: dict[str, float] = {}  # tool_id -> start_time
 
         # Wire up callbacks
         self.agent.on_tool_start = self._on_tool_start
@@ -96,6 +118,7 @@ class CLI:
     def _on_tool_start(self, call: ToolCall) -> None:
         """Display tool execution indicator."""
         self._spinner.stop()  # Stop spinner before printing
+        self._tool_timers[call.tool_id] = time.time()
         icon = self._tool_icon(call.name)
         print(
             f"  {Colors.DIM}{icon} Executing {Colors.CYAN}{call.name}"
@@ -103,20 +126,16 @@ class CLI:
         )
 
     def _on_tool_end(self, call: ToolCall, result: ToolResult) -> None:
-        """Display tool result status."""
+        """Display tool result status with timing via RichOutput."""
         self._spinner.stop()
-        if result.success:
-            # Show truncated output
-            preview = result.output[:120].replace("\n", " ")
-            if len(result.output) > 120:
-                preview += "..."
-            print(
-                f"  {Colors.GREEN}✓{Colors.RESET} {Colors.DIM}{preview}{Colors.RESET}"
-            )
-        else:
-            print(
-                f"  {Colors.RED}✗ {result.error}{Colors.RESET}"
-            )
+        # Calculate duration
+        start = self._tool_timers.pop(call.tool_id, None)
+        duration_ms = (time.time() - start) * 1000 if start else 0
+        output_lines = len(result.output.split("\n")) if result.output else 0
+        # Use RichOutput for formatted tool result line
+        print(self._rich.tool_result(call.name, result.success, duration_ms, output_lines))
+        if not result.success and result.error:
+            print(self._rich.error(result.error))
         # Restart spinner — agent will call LLM again after tool results
         self._spinner.start("Thinking")
 
@@ -235,6 +254,30 @@ class CLI:
             self._show_config()
             return True
 
+        elif command == "/health":
+            asyncio.get_event_loop().run_until_complete(self._show_health())
+            return True
+
+        elif command == "/sessions":
+            self._show_sessions()
+            return True
+
+        elif command == "/snapshot":
+            self._create_snapshot(arg)
+            return True
+
+        elif command == "/snapshots":
+            self._show_snapshots()
+            return True
+
+        elif command == "/metrics":
+            self._show_metrics()
+            return True
+
+        elif command == "/analytics":
+            self._show_analytics()
+            return True
+
         elif command in ("/exit", "/quit", "/q"):
             self._running = False
             return True
@@ -250,6 +293,12 @@ class CLI:
   {Colors.CYAN}/history{Colors.RESET}   Show conversation history
   {Colors.CYAN}/todos{Colors.RESET}     Show current task list
   {Colors.CYAN}/config{Colors.RESET}    Show current configuration
+  {Colors.CYAN}/health{Colors.RESET}    Show system health status
+  {Colors.CYAN}/sessions{Colors.RESET}  List saved sessions
+  {Colors.CYAN}/snapshot{Colors.RESET}  Create state snapshot
+  {Colors.CYAN}/snapshots{Colors.RESET} List saved snapshots
+  {Colors.CYAN}/metrics{Colors.RESET}   Show tool execution metrics
+  {Colors.CYAN}/analytics{Colors.RESET} Show session usage analytics
   {Colors.CYAN}/exit{Colors.RESET}      Exit the agent
 """)
 
@@ -304,6 +353,147 @@ class CLI:
             print(f"  {icon} {color}{label}{Colors.RESET}")
         print()
 
+    def _show_sessions(self) -> None:
+        """Display recent saved sessions."""
+        if not self._agent_session:
+            print(f"  {Colors.DIM}Session manager not available.{Colors.RESET}\n")
+            return
+        sessions = self._agent_session.list_recent(limit=10)
+        if not sessions:
+            print(f"  {Colors.DIM}No saved sessions.{Colors.RESET}\n")
+            return
+        print()
+        for s in sessions:
+            from datetime import datetime
+            ts = datetime.fromtimestamp(s.updated_at).strftime("%Y-%m-%d %H:%M")
+            current = " ◀" if s.session_id == self._agent_session.session_id else ""
+            print(
+                f"  {Colors.CYAN}{s.session_id[:8]}{Colors.RESET} "
+                f"{s.title}  {Colors.DIM}({ts}, {s.message_count} msgs){Colors.RESET}"
+                f"{Colors.GREEN}{current}{Colors.RESET}"
+            )
+        print()
+
+    def _create_snapshot(self, label: str = "") -> None:
+        """Create a state snapshot."""
+        if not self._snapshot_manager:
+            print(f"  {Colors.DIM}Snapshot manager not available.{Colors.RESET}\n")
+            return
+        snap_id = self._snapshot_manager.create_snapshot(
+            messages=self.agent.messages,
+            label=label or "Manual snapshot",
+            session_id=self._agent_session.session_id if self._agent_session else None,
+        )
+        print(f"  {Colors.GREEN}✓ Snapshot created: {snap_id}{Colors.RESET}\n")
+
+    def _show_snapshots(self) -> None:
+        """List saved snapshots."""
+        if not self._snapshot_manager:
+            print(f"  {Colors.DIM}Snapshot manager not available.{Colors.RESET}\n")
+            return
+        snaps = self._snapshot_manager.list_snapshots(limit=10)
+        if not snaps:
+            print(f"  {Colors.DIM}No snapshots saved.{Colors.RESET}\n")
+            return
+        print()
+        for s in snaps:
+            from datetime import datetime
+            ts = datetime.fromtimestamp(s.timestamp).strftime("%Y-%m-%d %H:%M:%S")
+            print(
+                f"  {Colors.CYAN}{s.snapshot_id[:16]}{Colors.RESET} "
+                f"{s.label}  {Colors.DIM}({ts}){Colors.RESET}"
+            )
+        print()
+
+    def _show_metrics(self) -> None:
+        """Display tool execution metrics via RichOutput."""
+        registry = self.agent.registry
+        collector = getattr(registry, "metrics_collector", None)
+        if not collector:
+            print(f"  {Colors.DIM}Metrics collector not available.{Colors.RESET}\n")
+            return
+        summary = collector.summary()
+        if summary.get("total_tool_calls", 0) == 0:
+            print(f"  {Colors.DIM}No tool calls recorded yet.{Colors.RESET}\n")
+            return
+        print()
+        print(self._rich.metrics_table(summary))
+        print()
+
+    def _show_analytics(self) -> None:
+        """Display session usage analytics."""
+        if not self._usage_analytics:
+            print(f"  {Colors.DIM}Usage analytics not available.{Colors.RESET}\n")
+            return
+        report = self._usage_analytics.session_report()
+        print()
+        # Cost summary
+        cost = report.get("cost", {})
+        total = cost.get("total_cost", 0)
+        calls = cost.get("call_count", 0)
+        savings = cost.get("total_cache_savings", 0)
+        print(f"  {Colors.BOLD}Cost:{Colors.RESET} ${total:.4f} ({calls} calls, ${savings:.4f} cache savings)")
+        budget = cost.get("budget_limit")
+        if budget is not None:
+            remaining = cost.get("remaining_budget", 0)
+            print(f"  {Colors.BOLD}Budget:{Colors.RESET} ${remaining:.4f} remaining of ${budget:.4f}")
+        # Routing summary
+        routing = report.get("routing", {})
+        dist = routing.get("tier_distribution", {})
+        if dist:
+            parts = [f"{k}: {v}" for k, v in dist.items()]
+            print(f"  {Colors.BOLD}Routing:{Colors.RESET} {', '.join(parts)}")
+        esc = routing.get("escalation_count", 0)
+        if esc:
+            print(f"  {Colors.YELLOW}Escalations: {esc}{Colors.RESET}")
+        # Efficiency
+        score = self._usage_analytics.efficiency_score()
+        print(f"  {Colors.BOLD}Efficiency:{Colors.RESET} {score:.0f}/100")
+        # Recommendations
+        recs = report.get("recommendations", [])
+        if recs:
+            print(f"  {Colors.BOLD}Recommendations:{Colors.RESET}")
+            for r in recs:
+                print(f"    {Colors.DIM}• {r}{Colors.RESET}")
+        print()
+
+    async def _run_streaming(self, user_input: str) -> str:
+        """Run agent with streaming display — print tokens as they arrive."""
+        self._spinner.stop()
+        sys.stdout.write(f"\n{Colors.BOLD}{Colors.GREEN}Agent ▸{Colors.RESET} ")
+        sys.stdout.flush()
+
+        full_response = ""
+        async for chunk in self.agent.run_stream(user_input):
+            sys.stdout.write(chunk)
+            sys.stdout.flush()
+            full_response += chunk
+
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        return full_response
+
+    async def _show_health(self) -> None:
+        """Display health report."""
+        if not self._health_monitor:
+            print(f"  {Colors.DIM}Health monitor not available.{Colors.RESET}\n")
+            return
+
+        report = await self._health_monitor.check_health()
+        status_colors = {
+            "healthy": Colors.GREEN,
+            "degraded": Colors.YELLOW,
+            "unhealthy": Colors.RED,
+        }
+        color = status_colors.get(report.status.value, Colors.DIM)
+        print(f"\n  {Colors.BOLD}System Health:{Colors.RESET} {color}{report.status.value.upper()}{Colors.RESET}")
+        print(f"  {Colors.DIM}Uptime: {report.uptime_seconds:.1f}s{Colors.RESET}")
+
+        for comp in report.components:
+            c = status_colors.get(comp.status.value, Colors.DIM)
+            print(f"    {c}●{Colors.RESET} {comp.name}: {comp.status.value} ({comp.response_time_ms:.1f}ms)")
+        print()
+
     def _show_config(self) -> None:
         provider = self.agent.provider
         print(f"""
@@ -338,12 +528,16 @@ class CLI:
                 print()
                 self._spinner.start("Thinking")
                 try:
-                    response = await self.agent.run(user_input)
+                    if self._streaming_enabled:
+                        response = await self._run_streaming(user_input)
+                        # Streaming already printed the response inline
+                        print()  # Just add spacing
+                    else:
+                        response = await self.agent.run(user_input)
+                        # Display response
+                        print(f"\n{Colors.BOLD}{Colors.GREEN}Agent ▸{Colors.RESET} {response}\n")
                 finally:
                     self._spinner.stop()
-
-                # Display response
-                print(f"\n{Colors.BOLD}{Colors.GREEN}Agent ▸{Colors.RESET} {response}\n")
 
             except KeyboardInterrupt:
                 print(f"\n  {Colors.DIM}(Cancelled){Colors.RESET}\n")

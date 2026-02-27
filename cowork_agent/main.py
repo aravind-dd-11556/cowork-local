@@ -14,6 +14,20 @@ from .core.providers.base import ProviderFactory
 from .core.tool_registry import ToolRegistry
 from .core.prompt_builder import PromptBuilder
 from .core.agent import Agent
+from .core.structured_logger import setup_structured_logging
+from .core.health_monitor import HealthMonitor
+from .core.shutdown_manager import ShutdownManager
+from .core.agent_session import AgentSessionManager, SessionConfig
+from .core.conversation_store import ConversationStore
+from .core.state_snapshot import StateSnapshotManager
+from .core.metrics_collector import MetricsCollector
+from .core.output_sanitizer import OutputSanitizer
+from .core.tool_permissions import ToolPermissionManager
+from .core.cost_tracker import CostTracker
+from .core.provider_health_tracker import ProviderHealthTracker
+from .core.provider_pool import ProviderPool
+from .core.model_router import ModelRouter, ModelTier, TierConfig
+from .core.usage_analytics import UsageAnalytics
 from .interfaces.cli import CLI
 
 # Register providers
@@ -58,7 +72,10 @@ def register_tools(registry: ToolRegistry, config: dict) -> None:
 
     registry.register(GlobTool(default_dir=workspace))
     registry.register(GrepTool(default_dir=workspace))
-    registry.register(TodoWriteTool())
+
+    # TodoWrite with persistence to .cowork/ directory
+    persist_dir = os.path.join(workspace, ".cowork")
+    registry.register(TodoWriteTool(persist_dir=persist_dir))
 
     # Interactive tool — ask user questions mid-task
     from .tools.ask_user import AskUserTool
@@ -183,7 +200,7 @@ def main() -> None:
         log_level = "INFO"
     else:
         log_level = "WARNING"
-    setup_logging(log_level)
+    setup_structured_logging(level=log_level)
 
     logger = logging.getLogger(__name__)
 
@@ -209,14 +226,41 @@ def main() -> None:
         print(f"Error creating LLM provider: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Create health monitor and register provider
+    health_monitor = HealthMonitor()
+    if hasattr(provider, "health_check"):
+        health_monitor.register_component("provider", provider.health_check)
+
+    # Create shutdown manager
+    shutdown_mgr = ShutdownManager()
+    shutdown_mgr.register_callback(
+        "health_shutdown",
+        lambda: health_monitor.set_shutting_down(True),
+        priority=100,
+    )
+
     # Create tool registry and register tools
     registry = ToolRegistry()
     register_tools(registry, config)
 
-    # Create prompt builder
-    prompt_builder = PromptBuilder(config._data)
+    # Create plan manager and register plan tools
+    from .core.plan_mode import PlanManager
+    from .tools.plan_tools import EnterPlanModeTool, ExitPlanModeTool
+    plan_manager = PlanManager(workspace_dir=workspace)
+    registry.register(EnterPlanModeTool(plan_manager))
+    registry.register(ExitPlanModeTool(plan_manager))
 
-    # Create agent with safety checker and context manager
+    # Create skill registry and discover skills
+    from .core.skill_registry import SkillRegistry
+    skill_registry = SkillRegistry(workspace_dir=workspace)
+    num_skills = skill_registry.discover()
+    if num_skills > 0:
+        logger.info(f"Discovered {num_skills} skills: {skill_registry.skill_names}")
+
+    # Create prompt builder with skill registry
+    prompt_builder = PromptBuilder(config._data, skill_registry=skill_registry)
+
+    # Create agent with safety checker, context manager, skill registry, and plan manager
     agent = Agent(
         provider=provider,
         registry=registry,
@@ -224,11 +268,84 @@ def main() -> None:
         max_iterations=config.get("agent.max_iterations", 15),
         workspace_dir=workspace,
         max_context_tokens=config.get("llm.max_tokens", 32000) * 2,  # context > output
+        skill_registry=skill_registry,
+        plan_manager=plan_manager,
     )
+
+    # ── Sprint 7: Persistence & State ─────────────────────────────
+    # Auto-session integration
+    from .core.session_manager import SessionManager
+    session_manager = SessionManager(workspace_dir=workspace)
+    agent_session = AgentSessionManager(
+        session_manager,
+        SessionConfig(
+            provider=config.get("llm.provider", ""),
+            model=config.get(f"llm.{config.get('llm.provider', 'ollama')}.model", ""),
+        ),
+    )
+    agent_session.initialize()
+
+    # Conversation store (for search/export)
+    conversation_store = ConversationStore(session_manager)
+
+    # State snapshot manager
+    snapshot_manager = StateSnapshotManager(workspace_dir=workspace)
+
+    # ── Sprint 8: Cross-Theme Hardening ───────────────────────────────
+    metrics_collector = MetricsCollector()
+    output_sanitizer = OutputSanitizer()
+    permission_manager = ToolPermissionManager(default_profile="full_access")
+
+    # Attach to registry and agent for automatic use
+    registry.metrics_collector = metrics_collector
+    registry.output_sanitizer = output_sanitizer
+    agent.permission_manager = permission_manager
+
+    # ── Sprint 9: Multi-Provider Intelligence ─────────────────────────
+    cost_tracker = CostTracker()
+    health_tracker = ProviderHealthTracker()
+    provider_pool = ProviderPool(health_tracker=health_tracker)
+    provider_pool.register(
+        config.get("llm.provider", "ollama"), provider, ModelTier.BALANCED,
+    )
+    model_router = ModelRouter(enabled=True)
+    usage_analytics = UsageAnalytics(
+        cost_tracker=cost_tracker,
+        metrics_collector=metrics_collector,
+        health_tracker=health_tracker,
+    )
+
+    # Attach to agent for automatic use
+    agent.cost_tracker = cost_tracker
+    agent.health_tracker = health_tracker
+
+    # Register Task tool (subagent delegation)
+    from .tools.task_tool import TaskTool
+
+    def _create_subagent():
+        """Factory for creating fresh subagent instances."""
+        sub_registry = ToolRegistry()
+        register_tools(sub_registry, config)
+        sub_builder = PromptBuilder(config._data, skill_registry=skill_registry)
+        return Agent(
+            provider=provider,
+            registry=sub_registry,
+            prompt_builder=sub_builder,
+            max_iterations=10,
+            workspace_dir=workspace,
+            max_context_tokens=config.get("llm.max_tokens", 32000) * 2,
+            skill_registry=skill_registry,
+        )
+
+    registry.register(TaskTool(agent_factory=_create_subagent))
 
     # Create and run CLI
     history_file = config.get("cli.history_file", "~/.cowork_agent_history")
-    cli = CLI(agent=agent, history_file=history_file)
+    cli = CLI(agent=agent, history_file=history_file,
+              health_monitor=health_monitor, shutdown_manager=shutdown_mgr,
+              agent_session=agent_session, conversation_store=conversation_store,
+              snapshot_manager=snapshot_manager,
+              usage_analytics=usage_analytics)
 
     # Wire AskUser tool to CLI input handler
     try:

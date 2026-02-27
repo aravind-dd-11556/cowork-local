@@ -32,6 +32,9 @@ class WriteTool(BaseTool):
         "required": ["file_path", "content"],
     }
 
+    # SEC-HIGH-3: Limit directory creation depth to prevent deep tree attacks
+    MAX_DIR_DEPTH = 15
+
     def __init__(self, workspace_dir: str = ""):
         self._workspace_dir = workspace_dir
 
@@ -43,6 +46,14 @@ class WriteTool(BaseTool):
         if not path.is_absolute():
             return self._error(
                 f"file_path must be absolute, got: {file_path}", tool_id
+            )
+
+        # SEC-HIGH-3: Reject excessively deep paths
+        if len(path.parts) > self.MAX_DIR_DEPTH:
+            return self._error(
+                f"Path too deep ({len(path.parts)} levels). "
+                f"Maximum allowed depth: {self.MAX_DIR_DEPTH}",
+                tool_id,
             )
 
         try:

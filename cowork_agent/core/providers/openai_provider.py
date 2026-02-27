@@ -4,7 +4,7 @@ OpenAI LLM Provider — uses native tool_use / function_calling API.
 
 from __future__ import annotations
 import json
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from .base import BaseLLMProvider, ProviderFactory
 from ..models import AgentResponse, Message, ToolCall, ToolSchema
@@ -57,8 +57,17 @@ class OpenAIProvider(BaseLLMProvider):
 
             choice = response.choices[0]
 
-            # Check for tool calls
-            if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
+            # Sprint 4: Extract token usage from response
+            usage = None
+            if hasattr(response, "usage") and response.usage:
+                usage = {
+                    "input_tokens": getattr(response.usage, "prompt_tokens", 0),
+                    "output_tokens": getattr(response.usage, "completion_tokens", 0),
+                }
+
+            # Check for tool calls — some models return finish_reason="stop"
+            # even when tool_calls are present, so check the message directly
+            if choice.message.tool_calls:
                 tool_calls = [
                     ToolCall(
                         name=tc.function.name,
@@ -71,11 +80,18 @@ class OpenAIProvider(BaseLLMProvider):
                     text=choice.message.content,
                     tool_calls=tool_calls,
                     stop_reason="tool_use",
+                    usage=usage,
                 )
+
+            # Map OpenAI stop reasons to our internal format
+            stop_reason = "end_turn"
+            if choice.finish_reason == "length":
+                stop_reason = "max_tokens"
 
             return AgentResponse(
                 text=choice.message.content or "",
-                stop_reason="end_turn",
+                stop_reason=stop_reason,
+                usage=usage,
             )
 
         except ImportError:
@@ -85,6 +101,106 @@ class OpenAIProvider(BaseLLMProvider):
             )
         except Exception as e:
             return AgentResponse(text=f"OpenAI error: {str(e)}", stop_reason="error")
+
+    async def send_message_stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolSchema],
+        system_prompt: str,
+    ) -> "AsyncIterator[str]":
+        """Stream response tokens using OpenAI's streaming API."""
+        try:
+            from openai import AsyncOpenAI
+
+            client = AsyncOpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                timeout=self.timeout,
+            )
+
+            openai_tools = self._convert_tools(tools) if tools else None
+            openai_messages = [{"role": "system", "content": system_prompt}]
+            openai_messages.extend(self._convert_messages(messages))
+
+            # Accumulators for tool calls
+            tool_call_accum = {}  # index -> {id, name, arguments}
+            text_parts = []
+
+            stream = await client.chat.completions.create(
+                model=self.model,
+                messages=openai_messages,
+                tools=openai_tools,
+                tool_choice="auto" if openai_tools else None,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=True,
+            )
+
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+
+                delta = chunk.choices[0].delta
+
+                # Text content
+                if delta.content:
+                    text_parts.append(delta.content)
+                    yield delta.content
+
+                # Tool call deltas
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_call_accum:
+                            tool_call_accum[idx] = {
+                                "id": tc_delta.id or "",
+                                "name": "",
+                                "arguments": "",
+                            }
+                        if tc_delta.id:
+                            tool_call_accum[idx]["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                tool_call_accum[idx]["name"] = tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                tool_call_accum[idx]["arguments"] += tc_delta.function.arguments
+
+            # Build tool calls from accumulated data
+            tool_calls = []
+            for idx in sorted(tool_call_accum.keys()):
+                tc_data = tool_call_accum[idx]
+                try:
+                    tc_input = json.loads(tc_data["arguments"]) if tc_data["arguments"] else {}
+                except json.JSONDecodeError:
+                    tc_input = {}
+                tool_calls.append(ToolCall(
+                    name=tc_data["name"],
+                    tool_id=tc_data["id"],
+                    input=tc_input,
+                ))
+
+            text = "".join(text_parts) if text_parts else None
+            stop_reason = "tool_use" if tool_calls else "end_turn"
+
+            self._last_stream_response = AgentResponse(
+                text=text,
+                tool_calls=tool_calls,
+                stop_reason=stop_reason,
+            )
+
+        except ImportError:
+            self._last_stream_response = AgentResponse(
+                text="OpenAI package not installed. Run: pip install openai",
+                stop_reason="error",
+            )
+            yield self._last_stream_response.text
+
+        except Exception as e:
+            self._last_stream_response = AgentResponse(
+                text=f"OpenAI streaming error: {str(e)}",
+                stop_reason="error",
+            )
+            yield self._last_stream_response.text
 
     def _convert_tools(self, tools: list[ToolSchema]) -> list[dict]:
         """Convert to OpenAI tools format."""
@@ -127,9 +243,14 @@ class OpenAIProvider(BaseLLMProvider):
                         for tc in msg.tool_calls
                     ],
                 })
+            elif msg.role == "tool_result":
+                # tool_result without tool_results data — skip empty messages
+                # to avoid confusing the API with orphan user messages
+                if msg.content:
+                    result.append({"role": "user", "content": msg.content})
             else:
                 result.append({
-                    "role": msg.role if msg.role != "tool_result" else "user",
+                    "role": msg.role,
                     "content": msg.content,
                 })
         return result

@@ -4,7 +4,7 @@ Anthropic LLM Provider — uses native tool_use API.
 
 from __future__ import annotations
 import json
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from .base import BaseLLMProvider, ProviderFactory
 from ..models import AgentResponse, Message, ToolCall, ToolSchema
@@ -65,14 +65,25 @@ class AnthropicProvider(BaseLLMProvider):
 
             text = "\n".join(text_parts) if text_parts else None
 
+            # Sprint 4: Extract token usage from response
+            usage = None
+            if hasattr(response, "usage") and response.usage:
+                usage = {
+                    "input_tokens": getattr(response.usage, "input_tokens", 0),
+                    "output_tokens": getattr(response.usage, "output_tokens", 0),
+                    "cache_read_input_tokens": getattr(response.usage, "cache_read_input_tokens", 0),
+                    "cache_creation_input_tokens": getattr(response.usage, "cache_creation_input_tokens", 0),
+                }
+
             if tool_calls:
                 return AgentResponse(
                     text=text,
                     tool_calls=tool_calls,
                     stop_reason="tool_use",
+                    usage=usage,
                 )
 
-            return AgentResponse(text=text or "", stop_reason="end_turn")
+            return AgentResponse(text=text or "", stop_reason="end_turn", usage=usage)
 
         except ImportError:
             return AgentResponse(
@@ -81,6 +92,90 @@ class AnthropicProvider(BaseLLMProvider):
             )
         except Exception as e:
             return AgentResponse(text=f"Anthropic error: {str(e)}", stop_reason="error")
+
+    async def send_message_stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolSchema],
+        system_prompt: str,
+    ) -> "AsyncIterator[str]":
+        """Stream response tokens using Anthropic's native streaming API."""
+        try:
+            from anthropic import AsyncAnthropic
+
+            client = AsyncAnthropic(api_key=self.api_key)
+
+            anthropic_tools = self._convert_tools(tools) if tools else []
+            anthropic_messages = self._convert_messages(messages)
+
+            # Accumulate tool calls as we stream
+            tool_calls = []
+            text_parts = []
+            current_tool_block = None  # Track the tool block being built
+            current_tool_json = ""     # Accumulate JSON input string
+
+            async with client.messages.stream(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                system=system_prompt,
+                messages=anthropic_messages,
+                tools=anthropic_tools if anthropic_tools else None,
+                temperature=self.temperature,
+            ) as stream:
+                async for event in stream:
+                    # Text delta — yield to caller
+                    if event.type == "content_block_delta":
+                        if hasattr(event.delta, "text"):
+                            text_parts.append(event.delta.text)
+                            yield event.delta.text
+                        elif hasattr(event.delta, "partial_json"):
+                            current_tool_json += event.delta.partial_json
+
+                    # New content block starting
+                    elif event.type == "content_block_start":
+                        if event.content_block.type == "tool_use":
+                            current_tool_block = event.content_block
+                            current_tool_json = ""
+
+                    # Content block finished
+                    elif event.type == "content_block_stop":
+                        if current_tool_block is not None:
+                            try:
+                                tool_input = json.loads(current_tool_json) if current_tool_json else {}
+                            except json.JSONDecodeError:
+                                tool_input = {}
+                            tool_calls.append(ToolCall(
+                                name=current_tool_block.name,
+                                tool_id=current_tool_block.id,
+                                input=tool_input,
+                            ))
+                            current_tool_block = None
+                            current_tool_json = ""
+
+            # Build final response
+            text = "".join(text_parts) if text_parts else None
+            stop_reason = "tool_use" if tool_calls else "end_turn"
+
+            self._last_stream_response = AgentResponse(
+                text=text,
+                tool_calls=tool_calls,
+                stop_reason=stop_reason,
+            )
+
+        except ImportError:
+            self._last_stream_response = AgentResponse(
+                text="Anthropic package not installed. Run: pip install anthropic",
+                stop_reason="error",
+            )
+            yield self._last_stream_response.text
+
+        except Exception as e:
+            self._last_stream_response = AgentResponse(
+                text=f"Anthropic streaming error: {str(e)}",
+                stop_reason="error",
+            )
+            yield self._last_stream_response.text
+
 
     def _convert_tools(self, tools: list[ToolSchema]) -> list[dict]:
         """Convert to Anthropic tools format."""

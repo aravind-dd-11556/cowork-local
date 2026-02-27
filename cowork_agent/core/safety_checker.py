@@ -147,8 +147,12 @@ class SafetyChecker:
         # 2. Check tool-specific safety
         if call.name == "bash":
             self._check_bash(call, result)
-        if call.name in ("read", "write", "edit", "glob", "grep"):
+        if call.name in ("read", "write", "edit"):
             self._check_file_path(call, result)
+        if call.name in ("glob", "grep"):
+            # For glob/grep, only check the 'path' field (directory to search in),
+            # NOT the 'pattern' field — glob patterns like '**/../*' are legitimate
+            self._check_search_path(call, result)
         if call.name == "write" and not result.blocked:
             self._check_secrets_in_content(call, result)
 
@@ -238,6 +242,28 @@ class SafetyChecker:
                     result.warnings.append(
                         f"Accessing sensitive path: {file_path}"
                     )
+
+    def _check_search_path(self, call: ToolCall, result: CheckResult) -> None:
+        """Check glob/grep search path (NOT pattern) for path traversal."""
+        search_path = call.input.get("path", "")
+        if not search_path:
+            return  # Using default dir — safe
+
+        if self._workspace:
+            try:
+                resolved = os.path.realpath(search_path)
+                if not resolved.startswith(self._workspace):
+                    safe_prefixes = ("/usr", "/bin", "/etc", "/tmp", "/var/tmp")
+                    if any(resolved.startswith(p) for p in safe_prefixes):
+                        result.warnings.append(
+                            f"Searching outside workspace: {resolved}"
+                        )
+                    else:
+                        result.warnings.append(
+                            f"Search path {search_path} is outside workspace"
+                        )
+            except (ValueError, OSError):
+                pass
 
     def _check_secrets_in_content(self, call: ToolCall, result: CheckResult) -> None:
         """Check for secrets/credentials in write content."""

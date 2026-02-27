@@ -3,6 +3,7 @@ Ollama LLM Provider.
 
 Since Ollama doesn't have universal native tool_use support, we embed
 tool schemas in the system prompt and parse JSON tool_calls from the response.
+Supports both streaming and non-streaming modes.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ import json
 import logging
 import re
 import httpx
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,87 @@ class OllamaProvider(BaseLLMProvider):
             )
         except Exception as e:
             return AgentResponse(text=f"Ollama error: {str(e)}", stop_reason="error")
+
+    async def send_message_stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolSchema],
+        system_prompt: str,
+    ) -> AsyncIterator[str]:
+        """
+        Stream response tokens from Ollama.
+
+        Yields text chunks as they arrive. After the stream ends, parses
+        the complete response for tool calls. The full AgentResponse is
+        available via `last_stream_response`.
+        """
+        enhanced_system = self._build_system_with_tools(system_prompt, tools)
+        ollama_messages = self._convert_messages(messages)
+
+        full_content = ""
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": [
+                            {"role": "system", "content": enhanced_system},
+                            *ollama_messages,
+                        ],
+                        "stream": True,
+                        "options": {
+                            "temperature": self.temperature,
+                            "num_predict": self.max_tokens,
+                        },
+                    },
+                ) as stream:
+                    done_reason = "unknown"
+                    async for line in stream.aiter_lines():
+                        if not line.strip():
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+
+                        # Each streamed chunk has message.content
+                        chunk = data.get("message", {}).get("content", "")
+                        if chunk:
+                            full_content += chunk
+                            # Only yield if we haven't started a tool_calls JSON block
+                            if '"tool_calls"' not in full_content:
+                                yield chunk
+
+                        if data.get("done", False):
+                            done_reason = data.get("done_reason", "stop")
+                            break
+
+            # Parse the full response for tool calls
+            response = self._parse_response(full_content)
+
+            # If Ollama reports length limit
+            if done_reason == "length" and not response.tool_calls:
+                response.stop_reason = "max_tokens"
+
+            self._last_stream_response = response
+
+        except httpx.ConnectError:
+            self._last_stream_response = AgentResponse(
+                text=f"Cannot connect to Ollama at {self.base_url}. "
+                     "Make sure Ollama is running (ollama serve).",
+                stop_reason="error",
+            )
+            yield self._last_stream_response.text
+
+        except Exception as e:
+            self._last_stream_response = AgentResponse(
+                text=f"Ollama streaming error: {str(e)}",
+                stop_reason="error",
+            )
+            yield self._last_stream_response.text
 
     def _build_system_with_tools(self, base_prompt: str, tools: list[ToolSchema]) -> str:
         """Embed tool schemas and calling instructions into system prompt."""

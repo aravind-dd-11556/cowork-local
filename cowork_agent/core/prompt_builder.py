@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Optional
 
 from .models import ToolSchema
+from .skill_registry import SkillRegistry
 from ..prompts.behavioral_rules import ALL_SECTIONS
 
 
@@ -32,9 +33,10 @@ class PromptBuilder:
         ... (more XML sections)
     """
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, skill_registry: Optional[SkillRegistry] = None):
         self.config = config
         self.workspace_dir = config.get("agent", {}).get("workspace_dir", "./workspace")
+        self.skill_registry = skill_registry
 
     def build(
         self,
@@ -70,7 +72,25 @@ class PromptBuilder:
         if tool_section:
             sections.append(tool_section)
 
-        # 5. Runtime reminder (active todos, iteration info)
+        # 5. Plan mode instructions (if active)
+        plan_prompt = ctx.get("plan_mode_prompt", "")
+        if plan_prompt:
+            sections.append(plan_prompt.strip())
+
+        # 6. Available skills listing
+        if self.skill_registry:
+            skills_section = self.skill_registry.get_available_skills_section()
+            if skills_section:
+                sections.append(skills_section)
+
+        # 6. Active skill content (injected when matched)
+        active_skills = ctx.get("active_skills", [])
+        if active_skills and self.skill_registry:
+            skill_prompt = self.skill_registry.get_skill_prompt_section(active_skills)
+            if skill_prompt:
+                sections.append(skill_prompt)
+
+        # 7. Runtime reminder (active todos, iteration info)
         reminder = self._section_system_reminder(ctx)
         if reminder:
             sections.append(reminder)
