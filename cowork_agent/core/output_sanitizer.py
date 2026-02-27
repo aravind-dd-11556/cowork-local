@@ -89,6 +89,7 @@ class OutputSanitizer:
 
     @property
     def enabled(self) -> bool:
+        """Whether output sanitization is active."""
         return self._enabled
 
     # ── Public API ─────────────────────────────────────────────
@@ -148,9 +149,9 @@ class OutputSanitizer:
         Mask a secret string, showing only the last *show_last_n* characters.
 
         Examples:
-            mask("AKIAIOSFODNN7EXAMPLE", 4) → "***MPLE"
-            mask("sk-abc123", 4)            → "***c123"
-            mask("ab", 4)                   → "***"
+            mask("some-long-secret-value", 4) → "***alue"
+            mask("short", 4)                  → "***hort"
+            mask("ab", 4)                     → "***"
         """
         if len(secret) <= show_last_n:
             return "***"
