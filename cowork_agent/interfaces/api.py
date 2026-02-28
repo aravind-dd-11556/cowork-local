@@ -173,10 +173,12 @@ class RestAPIInterface(BaseInterface):
         agent_factory=None,
         host: str = "127.0.0.1",
         port: int = 8000,
+        dashboard_provider=None,
     ):
         super().__init__(agent)
         self.host = host
         self.port = port
+        self._dashboard_provider = dashboard_provider
 
         # If no factory provided, build a simple one from the prototype agent
         if agent_factory is None:
@@ -185,6 +187,7 @@ class RestAPIInterface(BaseInterface):
         self._ws = WebSocketConnectionManager()
         self._pending_questions: dict[str, dict] = {}
         self._cancellation_tokens: dict[str, Any] = {}  # session_id -> StreamCancellationToken
+        self._dashboard_ws_clients: list[WebSocket] = []
 
         self.app = FastAPI(
             title="Cowork Agent API",
@@ -208,6 +211,93 @@ class RestAPIInterface(BaseInterface):
             if dashboard_path.exists():
                 return HTMLResponse(content=dashboard_path.read_text())
             return HTMLResponse(content="<h1>Cowork Agent API</h1><p>Dashboard not found.</p>")
+
+        @app.get("/dashboard", response_class=HTMLResponse)
+        async def serve_observability_dashboard():
+            """Serve the observability dashboard."""
+            obs_path = Path(__file__).parent / "web" / "observability_dashboard.html"
+            if obs_path.exists():
+                return HTMLResponse(content=obs_path.read_text())
+            return HTMLResponse(content="<h1>Observability Dashboard</h1><p>Not found.</p>")
+
+        @app.get("/api/dashboard/full")
+        async def dashboard_full():
+            """Full dashboard snapshot for initial page load."""
+            if not self._dashboard_provider:
+                return JSONResponse({"error": "Dashboard not configured"}, status_code=503)
+            return self._dashboard_provider.get_full_dashboard()
+
+        @app.get("/api/dashboard/metrics")
+        async def dashboard_metrics():
+            """Current metrics snapshot."""
+            if not self._dashboard_provider:
+                return JSONResponse({"error": "Dashboard not configured"}, status_code=503)
+            return self._dashboard_provider.get_metrics_snapshot()
+
+        @app.get("/api/dashboard/metrics/historical")
+        async def dashboard_metrics_historical(days: int = 7):
+            """Historical metrics from persistent store."""
+            if not self._dashboard_provider:
+                return JSONResponse({"error": "Dashboard not configured"}, status_code=503)
+            return self._dashboard_provider.get_metrics_historical(days=days)
+
+        @app.get("/api/dashboard/audit")
+        async def dashboard_audit(severity: Optional[str] = None, limit: int = 100):
+            """Filtered audit events."""
+            if not self._dashboard_provider:
+                return JSONResponse({"error": "Dashboard not configured"}, status_code=503)
+            return self._dashboard_provider.get_audit_feed(severity=severity, limit=limit)
+
+        @app.get("/api/dashboard/health")
+        async def dashboard_health():
+            """Health orchestrator snapshot with trends."""
+            if not self._dashboard_provider:
+                return JSONResponse({"error": "Dashboard not configured"}, status_code=503)
+            return self._dashboard_provider.get_health_snapshot()
+
+        @app.get("/api/dashboard/benchmarks")
+        async def dashboard_benchmarks(name: Optional[str] = None):
+            """Benchmark stats and recent runs."""
+            if not self._dashboard_provider:
+                return JSONResponse({"error": "Dashboard not configured"}, status_code=503)
+            return self._dashboard_provider.get_benchmark_data(name=name)
+
+        @app.get("/api/dashboard/store")
+        async def dashboard_store_stats():
+            """Persistent store statistics."""
+            if not self._dashboard_provider:
+                return JSONResponse({"error": "Dashboard not configured"}, status_code=503)
+            return self._dashboard_provider.get_store_stats()
+
+        # ── Dashboard WebSocket ────────────────────────────────
+
+        @app.websocket("/ws/dashboard")
+        async def dashboard_ws(ws: WebSocket):
+            """WebSocket for real-time dashboard updates."""
+            await ws.accept()
+            self._dashboard_ws_clients.append(ws)
+            try:
+                while True:
+                    # Keep connection alive; client doesn't send data
+                    raw = await ws.receive_text()
+                    # Optionally handle refresh requests
+                    try:
+                        msg = json.loads(raw)
+                        if msg.get("type") == "refresh":
+                            if self._dashboard_provider:
+                                await ws.send_json({
+                                    "type": "full_refresh",
+                                    "data": self._dashboard_provider.get_full_dashboard(),
+                                })
+                    except (json.JSONDecodeError, Exception):
+                        pass
+            except WebSocketDisconnect:
+                pass
+            except Exception:
+                pass
+            finally:
+                if ws in self._dashboard_ws_clients:
+                    self._dashboard_ws_clients.remove(ws)
 
         # ── Sessions ────────────────────────────────────────────
 
@@ -454,6 +544,20 @@ class RestAPIInterface(BaseInterface):
         agent.on_tool_start = on_tool_start
         agent.on_tool_end = on_tool_end
         agent.on_status = on_status
+
+    # ── Dashboard Broadcast ──────────────────────────────────
+
+    async def broadcast_dashboard_event(self, event_type: str, data: dict) -> None:
+        """Broadcast a dashboard event to all connected dashboard WebSocket clients."""
+        message = {"type": event_type, "data": data}
+        dead: list[WebSocket] = []
+        for ws in self._dashboard_ws_clients:
+            try:
+                await ws.send_json(message)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self._dashboard_ws_clients.remove(ws)
 
     # ── ask_user Handler ────────────────────────────────────────
 

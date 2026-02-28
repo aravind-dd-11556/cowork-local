@@ -198,6 +198,13 @@ persistent_storage:
   auto_cleanup: true
   db_name: "metrics.db"
 
+# Sprint 20: Web UI — Observability Dashboard
+web_dashboard:
+  enabled: true
+  auto_refresh_seconds: 30
+  max_audit_feed: 100
+  websocket_broadcast: true
+
 cli:
   history_file: "~/.cowork_agent_history"
   show_tool_execution: true

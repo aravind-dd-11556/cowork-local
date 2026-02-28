@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cowork Agent — Observability Dashboard</title>
+<style>
+:root {
+  --bg: #0f172a; --bg-card: #1e293b; --bg-hover: #334155;
+  --text: #e2e8f0; --text-dim: #94a3b8; --text-bright: #f8fafc;
+  --accent: #3b82f6; --accent-glow: rgba(59,130,246,.15);
+  --green: #22c55e; --yellow: #eab308; --red: #ef4444; --orange: #f97316;
+  --border: #334155; --radius: 8px;
+  --font: system-ui, -apple-system, sans-serif;
+  --mono: 'SF Mono', 'Fira Code', monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); min-height: 100vh; }
+.header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 16px; }
+.header h1 { font-size: 18px; font-weight: 600; color: var(--text-bright); }
+.header .badge { background: var(--accent-glow); color: var(--accent); padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 500; }
+.header .refresh-btn { margin-left: auto; background: var(--bg-card); border: 1px solid var(--border); color: var(--text); padding: 6px 14px; border-radius: var(--radius); cursor: pointer; font-size: 13px; }
+.header .refresh-btn:hover { background: var(--bg-hover); }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 24px; }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+.card-title { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-dim); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.card-title .icon { font-size: 16px; }
+.stat-row { display: flex; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
+.stat { flex: 1; min-width: 100px; }
+.stat-label { font-size: 11px; color: var(--text-dim); margin-bottom: 2px; }
+.stat-value { font-size: 22px; font-weight: 700; font-family: var(--mono); color: var(--text-bright); }
+.stat-value.green { color: var(--green); }
+.stat-value.yellow { color: var(--yellow); }
+.stat-value.red { color: var(--red); }
+.event-list { max-height: 300px; overflow-y: auto; }
+.event-item { padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; display: flex; gap: 8px; align-items: flex-start; }
+.event-item:last-child { border-bottom: none; }
+.severity-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; }
+.severity-dot.critical { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.severity-dot.high { background: var(--orange); }
+.severity-dot.medium { background: var(--yellow); }
+.severity-dot.low { background: var(--green); }
+.event-time { color: var(--text-dim); font-family: var(--mono); font-size: 11px; flex-shrink: 0; }
+.event-desc { flex: 1; }
+.event-type { color: var(--accent); font-size: 11px; font-weight: 500; }
+.health-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.health-item:last-child { border-bottom: none; }
+.health-name { font-size: 13px; }
+.health-score { font-family: var(--mono); font-weight: 600; }
+.bench-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.bench-table th { text-align: left; padding: 6px 8px; color: var(--text-dim); font-weight: 500; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--border); }
+.bench-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); font-family: var(--mono); }
+.bench-table tr:last-child td { border-bottom: none; }
+.no-data { color: var(--text-dim); font-style: italic; padding: 20px; text-align: center; font-size: 13px; }
+.ws-status { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.ws-status.connected { background: var(--green); }
+.ws-status.disconnected { background: var(--red); }
+canvas { max-height: 200px; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+</head>
+<body>
+<div class="header">
+  <h1>Observability Dashboard</h1>
+  <span class="badge" id="ws-badge"><span class="ws-status disconnected" id="ws-dot"></span> Disconnected</span>
+  <button class="refresh-btn" onclick="refresh()">Refresh</button>
+</div>
+
+<div class="grid">
+  <!-- Metrics Panel -->
+  <div class="card" id="metrics-panel">
+    <div class="card-title"><span class="icon">📊</span> Metrics Overview</div>
+    <div id="metrics-content"><div class="no-data">Loading metrics...</div></div>
+  </div>
+
+  <!-- Event Timeline -->
+  <div class="card" id="events-panel">
+    <div class="card-title"><span class="icon">🔒</span> Event Timeline</div>
+    <div class="event-list" id="events-content"><div class="no-data">Loading events...</div></div>
+  </div>
+
+  <!-- Health Status -->
+  <div class="card" id="health-panel">
+    <div class="card-title"><span class="icon">💚</span> Health Status</div>
+    <div id="health-content"><div class="no-data">Loading health data...</div></div>
+  </div>
+
+  <!-- Benchmark Charts -->
+  <div class="card" id="bench-panel">
+    <div class="card-title"><span class="icon">⚡</span> Benchmark Performance</div>
+    <div id="bench-content"><div class="no-data">Loading benchmarks...</div></div>
+  </div>
+</div>
+
+<script>
+const BASE = window.location.origin;
+let ws = null;
+let chart = null;
+
+function formatTime(ts) {
+  if (!ts) return '--';
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString();
+}
+
+function severityClass(sev) {
+  return (sev || '').toLowerCase();
+}
+
+function scoreColor(score) {
+  if (score >= 0.8) return 'green';
+  if (score >= 0.5) return 'yellow';
+  return 'red';
+}
+
+function renderMetrics(data) {
+  const el = document.getElementById('metrics-content');
+  if (!data || !data.available) { el.innerHTML = '<div class="no-data">Metrics not available</div>'; return; }
+  if (data.error) { el.innerHTML = `<div class="no-data">Error: ${data.error}</div>`; return; }
+
+  const providers = data.providers || {};
+  const provNames = Object.keys(providers);
+  let html = '<div class="stat-row">';
+  html += `<div class="stat"><div class="stat-label">Providers</div><div class="stat-value">${data.total_providers || provNames.length}</div></div>`;
+
+  // Token usage summary
+  const tu = data.token_usage || {};
+  let totalIn = 0, totalOut = 0;
+  Object.values(tu).forEach(p => { totalIn += (p.total_input_tokens || 0); totalOut += (p.total_output_tokens || 0); });
+  html += `<div class="stat"><div class="stat-label">Input Tokens</div><div class="stat-value">${totalIn.toLocaleString()}</div></div>`;
+  html += `<div class="stat"><div class="stat-label">Output Tokens</div><div class="stat-value">${totalOut.toLocaleString()}</div></div>`;
+  html += '</div>';
+
+  // Per-provider
+  provNames.forEach(name => {
+    const p = providers[name];
+    const health = (p.health_score != null) ? p.health_score : '--';
+    const color = typeof health === 'number' ? scoreColor(health) : '';
+    html += `<div class="health-item"><span class="health-name">${name}</span>`;
+    html += `<span class="health-score ${color}">${typeof health === 'number' ? health.toFixed(2) : health}</span></div>`;
+  });
+
+  el.innerHTML = html;
+}
+
+function renderEvents(data) {
+  const el = document.getElementById('events-content');
+  if (!data || !data.available) { el.innerHTML = '<div class="no-data">Audit log not available</div>'; return; }
+  const events = data.events || [];
+  if (!events.length) { el.innerHTML = '<div class="no-data">No events recorded</div>'; return; }
+
+  let html = '';
+  events.slice(0, 50).forEach(e => {
+    const sev = severityClass(e.severity);
+    html += `<div class="event-item">
+      <span class="severity-dot ${sev}"></span>
+      <span class="event-time">${formatTime(e.timestamp)}</span>
+      <div class="event-desc">
+        <div class="event-type">${e.event_type || ''} ${e.blocked ? '(blocked)' : ''}</div>
+        <div>${e.description || ''}</div>
+      </div>
+    </div>`;
+  });
+  el.innerHTML = html;
+}
+
+function renderHealth(data) {
+  const el = document.getElementById('health-content');
+  if (!data || !data.available) { el.innerHTML = '<div class="no-data">Health data not available</div>'; return; }
+
+  const report = data.report || {};
+  const components = report.components || {};
+  const names = Object.keys(components);
+
+  if (!names.length) {
+    el.innerHTML = `<div class="stat-row"><div class="stat"><div class="stat-label">Status</div><div class="stat-value green">${data.status || 'OK'}</div></div></div>`;
+    return;
+  }
+
+  let html = '';
+  names.forEach(name => {
+    const c = components[name];
+    const score = c.score != null ? c.score : c.health_score;
+    const color = typeof score === 'number' ? scoreColor(score) : '';
+    html += `<div class="health-item"><span class="health-name">${name}</span>`;
+    html += `<span class="health-score ${color}">${typeof score === 'number' ? score.toFixed(2) : (c.status || '--')}</span></div>`;
+  });
+  el.innerHTML = html;
+}
+
+function renderBenchmarks(data) {
+  const el = document.getElementById('bench-content');
+  if (!data || !data.available) { el.innerHTML = '<div class="no-data">Benchmark data not available</div>'; return; }
+  const benchmarks = data.benchmarks || {};
+  const names = Object.keys(benchmarks);
+  if (!names.length) { el.innerHTML = '<div class="no-data">No benchmarks recorded</div>'; return; }
+
+  let html = '<table class="bench-table"><tr><th>Name</th><th>Count</th><th>Avg</th><th>P95</th><th>P99</th><th>Success</th></tr>';
+  names.forEach(name => {
+    const b = benchmarks[name];
+    html += `<tr><td>${name}</td><td>${b.count}</td><td>${b.avg_ms?.toFixed(1) || '--'}ms</td>`;
+    html += `<td>${b.p95_ms?.toFixed(1) || '--'}ms</td><td>${b.p99_ms?.toFixed(1) || '--'}ms</td>`;
+    html += `<td>${b.success_rate != null ? (b.success_rate * 100).toFixed(0) + '%' : '--'}</td></tr>`;
+  });
+  html += '</table>';
+  el.innerHTML = html;
+}
+
+async function refresh() {
+  try {
+    const res = await fetch(BASE + '/api/dashboard/full');
+    const data = await res.json();
+    renderMetrics(data.metrics);
+    renderEvents(data.audit);
+    renderHealth(data.health);
+    renderBenchmarks(data.benchmarks);
+  } catch (e) {
+    console.error('Dashboard refresh failed:', e);
+  }
+}
+
+function connectWebSocket() {
+  const wsUrl = BASE.replace('http', 'ws') + '/ws/dashboard';
+  try {
+    ws = new WebSocket(wsUrl);
+    ws.onopen = () => {
+      document.getElementById('ws-dot').className = 'ws-status connected';
+      document.getElementById('ws-badge').innerHTML = '<span class="ws-status connected" id="ws-dot"></span> Connected';
+    };
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'metrics_updated') renderMetrics(msg.data);
+        else if (msg.type === 'event_logged') refresh();
+        else if (msg.type === 'health_updated') renderHealth(msg.data);
+        else if (msg.type === 'benchmark_recorded') renderBenchmarks(msg.data);
+      } catch (err) { console.debug('WS parse error:', err); }
+    };
+    ws.onclose = () => {
+      document.getElementById('ws-dot').className = 'ws-status disconnected';
+      document.getElementById('ws-badge').innerHTML = '<span class="ws-status disconnected" id="ws-dot"></span> Disconnected';
+      setTimeout(connectWebSocket, 5000);
+    };
+    ws.onerror = () => ws.close();
+  } catch (e) { setTimeout(connectWebSocket, 5000); }
+}
+
+// Init
+refresh();
+connectWebSocket();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>

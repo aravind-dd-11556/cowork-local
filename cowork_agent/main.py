@@ -750,6 +750,24 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"Sprint 19 persistent storage not available: {e}")
 
+    # ── Sprint 20: Web UI — Observability Dashboard ──────────────────
+    dashboard_provider = None
+    try:
+        dash_cfg = config.get("web_dashboard", {})
+        if dash_cfg.get("enabled", True):
+            from .core.dashboard_data_provider import DashboardDataProvider
+            dashboard_provider = DashboardDataProvider(
+                metrics_registry=getattr(agent, "metrics_registry", None),
+                audit_log=getattr(agent, "security_audit_log", None),
+                health_orchestrator=getattr(agent, "health_orchestrator", None),
+                benchmark=getattr(agent, "benchmark", None),
+                persistent_store=getattr(agent, "persistent_store", None),
+            )
+            agent.dashboard_provider = dashboard_provider
+            logger.info("Sprint 20: Dashboard data provider initialized")
+    except Exception as e:
+        logger.warning(f"Sprint 20 dashboard not available: {e}")
+
     # ── Sprint 18: Wire Git Operations, File Locks, Workspace Context ──
     try:
         if config.get("git.enabled", True):
@@ -949,6 +967,7 @@ def main() -> None:
             agent_factory=_create_subagent,
             host="0.0.0.0",
             port=getattr(args, "api_port", 8000),
+            dashboard_provider=dashboard_provider,
         )
         print(f"Starting API server on http://0.0.0.0:{args.api_port}")
         print(f"Dashboard: http://localhost:{args.api_port}/")
