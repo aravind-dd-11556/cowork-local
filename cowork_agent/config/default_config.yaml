@@ -41,8 +41,8 @@ agent:
     max_size: 100
     ttl: 3600
   stream_hardener:
-    chunk_timeout: 30.0
-    total_timeout: 300.0
+    chunk_timeout: 120.0
+    total_timeout: 600.0
 
 # Sprint 13: Error Recovery & Resilience
 error_recovery:
