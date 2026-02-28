@@ -729,10 +729,25 @@ class CLI:
             task = svc["task"]
             if task.done():
                 status = f"{Colors.RED}● stopped{Colors.RESET}"
+                # Show crash reason if the task died with an exception
+                error_detail = ""
+                try:
+                    exc = task.exception()
+                    if exc:
+                        error_detail = f"\n      {Colors.RED}Error: {exc}{Colors.RESET}"
+                        # Print traceback for debugging
+                        import traceback as _tb
+                        tb_lines = _tb.format_exception(type(exc), exc, exc.__traceback__)
+                        for line in tb_lines[-3:]:
+                            for sub in line.rstrip().split("\n"):
+                                error_detail += f"\n      {Colors.DIM}{sub}{Colors.RESET}"
+                except asyncio.CancelledError:
+                    error_detail = f"\n      {Colors.DIM}(cancelled){Colors.RESET}"
             else:
                 status = f"{Colors.GREEN}● running{Colors.RESET}"
+                error_detail = ""
             info = svc.get("info", "")
-            print(f"    {status} {Colors.CYAN}{name}{Colors.RESET}  {info}  ({mins}m {secs}s)")
+            print(f"    {status} {Colors.CYAN}{name}{Colors.RESET}  {info}  ({mins}m {secs}s){error_detail}")
         print()
 
     async def _rc_start(self, arg: str) -> None:
@@ -826,14 +841,29 @@ class CLI:
         )
 
         task = asyncio.create_task(bot.run())
+
+        def _on_telegram_done(t: asyncio.Task) -> None:
+            try:
+                exc = t.exception()
+                if exc:
+                    print(f"\n  {Colors.RED}✗ Telegram bot crashed: {exc}{Colors.RESET}")
+                    print(f"  {Colors.DIM}Use /rc start telegram to restart.{Colors.RESET}\n")
+            except asyncio.CancelledError:
+                pass
+
+        task.add_done_callback(_on_telegram_done)
+
         self._remote_services["telegram"] = {
             "task": task,
             "started_at": time.time(),
             "info": "polling",
             "instance": bot,
         }
-        await asyncio.sleep(0.5)
-        print(f"  {Colors.GREEN}✓ Telegram bot started.{Colors.RESET}\n")
+        await asyncio.sleep(1)
+        if task.done():
+            print(f"  {Colors.RED}✗ Telegram bot failed to start. See error above.{Colors.RESET}\n")
+        else:
+            print(f"  {Colors.GREEN}✓ Telegram bot started.{Colors.RESET}\n")
 
     async def _start_slack_bot(self, tokens_arg: str = "") -> None:
         """Launch the Slack bot as a background task."""
@@ -862,14 +892,37 @@ class CLI:
         )
 
         task = asyncio.create_task(bot.run())
+
+        def _on_slack_done(t: asyncio.Task) -> None:
+            """Callback when Slack task finishes — surface errors immediately."""
+            try:
+                exc = t.exception()
+                if exc:
+                    print(f"\n  {Colors.RED}✗ Slack bot crashed: {exc}{Colors.RESET}")
+                    import traceback as _tb
+                    tb_lines = _tb.format_exception(type(exc), exc, exc.__traceback__)
+                    for line in tb_lines[-4:]:
+                        for sub in line.rstrip().split("\n"):
+                            print(f"    {Colors.DIM}{sub}{Colors.RESET}")
+                    print(f"  {Colors.DIM}Use /rc start slack to restart.{Colors.RESET}\n")
+            except asyncio.CancelledError:
+                print(f"\n  {Colors.DIM}Slack bot stopped.{Colors.RESET}\n")
+
+        task.add_done_callback(_on_slack_done)
+
         self._remote_services["slack"] = {
             "task": task,
             "started_at": time.time(),
             "info": "socket mode",
             "instance": bot,
         }
-        await asyncio.sleep(0.5)
-        print(f"  {Colors.GREEN}✓ Slack bot started.{Colors.RESET}\n")
+        # Wait a bit longer to catch immediate startup failures
+        await asyncio.sleep(2)
+        if task.done():
+            # Task already died — the callback will have printed the error
+            print(f"  {Colors.RED}✗ Slack bot failed to start. See error above.{Colors.RESET}\n")
+        else:
+            print(f"  {Colors.GREEN}✓ Slack bot started.{Colors.RESET}\n")
 
     async def _rc_stop(self, arg: str) -> None:
         """Stop a running remote service."""
