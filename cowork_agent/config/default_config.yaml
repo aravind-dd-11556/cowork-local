@@ -44,6 +44,20 @@ agent:
     chunk_timeout: 30.0
     total_timeout: 300.0
 
+# Sprint 13: Error Recovery & Resilience
+error_recovery:
+  enabled: true
+  circuit_breaker:
+    failure_threshold: 5
+    timeout_seconds: 60
+    half_open_max_calls: 2
+  error_budget:
+    max_error_rate: 0.20
+    window_seconds: 300
+  aggregator:
+    window_seconds: 300
+    spike_threshold: 3.0
+
 # Sprint 18: Git & Worktree Integration
 git:
   enabled: true

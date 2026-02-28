@@ -399,6 +399,63 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"Retry executor not available: {e}")
 
+    # ── Sprint 13: Error Recovery & Resilience ──────────────────────────
+    try:
+        er_cfg = config.get("error_recovery", {})
+        if er_cfg.get("enabled", True):
+            from .core.provider_circuit_breaker import ProviderCircuitBreaker, CircuitBreakerConfig
+            from .core.error_aggregator import ErrorAggregator
+            from .core.error_recovery_orchestrator import RecoveryOrchestrator
+            from .core.error_context import ErrorContextEnricher
+            from .core.error_budget import ErrorBudgetTracker, ErrorBudgetConfig
+
+            # Provider circuit breaker
+            cb_cfg = er_cfg.get("circuit_breaker", {})
+            cb_config = CircuitBreakerConfig(
+                failure_threshold=cb_cfg.get("failure_threshold", 5),
+                timeout_seconds=cb_cfg.get("timeout_seconds", 60),
+                half_open_max_calls=cb_cfg.get("half_open_max_calls", 2),
+            )
+            provider_circuit_breaker = ProviderCircuitBreaker(config=cb_config)
+
+            # Error aggregator
+            agg_cfg = er_cfg.get("aggregator", {})
+            error_aggregator = ErrorAggregator(
+                window_seconds=agg_cfg.get("window_seconds", 300),
+                spike_threshold=agg_cfg.get("spike_threshold", 3.0),
+            )
+
+            # Recovery orchestrator
+            recovery_orchestrator = RecoveryOrchestrator()
+
+            # Error context enricher
+            error_enricher = ErrorContextEnricher()
+
+            # Error budget tracker
+            eb_cfg = er_cfg.get("error_budget", {})
+            eb_config = ErrorBudgetConfig(
+                max_error_rate=eb_cfg.get("max_error_rate", 0.20),
+                window_seconds=eb_cfg.get("window_seconds", 300),
+            )
+            error_budget = ErrorBudgetTracker(config=eb_config)
+
+            # Attach all to agent
+            agent.provider_circuit_breaker = provider_circuit_breaker
+            agent.error_aggregator = error_aggregator
+            agent.recovery_orchestrator = recovery_orchestrator
+            agent.error_enricher = error_enricher
+            agent.error_budget = error_budget
+
+            # Register aggregator health check with HealthMonitor
+            health_monitor.register_component(
+                "error_aggregator",
+                lambda: error_aggregator.get_error_rate() < eb_config.max_error_rate,
+            )
+
+            logger.info("Error recovery & resilience modules initialized")
+    except Exception as e:
+        logger.warning(f"Error recovery modules not available: {e}")
+
     # ── Sprint 18: Wire Git Operations, File Locks, Workspace Context ──
     try:
         if config.get("git.enabled", True):
