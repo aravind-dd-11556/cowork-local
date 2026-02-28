@@ -191,6 +191,13 @@ security:
     enabled: true
     max_events: 10000
 
+# Sprint 19: Persistent Storage
+persistent_storage:
+  enabled: true
+  retention_days: 90
+  auto_cleanup: true
+  db_name: "metrics.db"
+
 cli:
   history_file: "~/.cowork_agent_history"
   show_tool_execution: true

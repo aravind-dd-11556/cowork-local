@@ -689,6 +689,67 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"Sprint 17 security not available: {e}")
 
+    # ── Sprint 19: Persistent Storage ─────────────────────────────────
+    try:
+        ps_cfg = config.get("persistent_storage", {})
+        if ps_cfg.get("enabled", True):
+            from .core.persistent_store import PersistentStore
+
+            store_path = os.path.join(workspace, ".cowork", "metrics")
+            db_name = ps_cfg.get("db_name", "metrics.db")
+            persistent_store = PersistentStore(base_path=store_path, db_name=db_name)
+            agent.persistent_store = persistent_store
+
+            # Upgrade metrics_registry to persistent version if available
+            if agent.metrics_registry is not None:
+                from .core.persistent_metrics_registry import PersistentMetricsRegistry
+                mr_cfg = config.get("observability", {}).get("metrics_registry", {})
+                persistent_metrics = PersistentMetricsRegistry(
+                    store=persistent_store,
+                    error_rate_window_seconds=mr_cfg.get("error_rate_window_seconds", 300),
+                    token_usage_tracking=mr_cfg.get("token_usage_tracking", True),
+                    detailed_latency_tracking=mr_cfg.get("detailed_latency_tracking", False),
+                )
+                agent.metrics_registry = persistent_metrics
+                logger.info("Metrics registry upgraded to persistent")
+
+            # Upgrade security_audit_log to persistent version if available
+            if agent.security_audit_log is not None:
+                from .core.persistent_audit_log import PersistentAuditLog
+                al_cfg = config.get("security", {}).get("audit_log", {})
+                persistent_audit = PersistentAuditLog(
+                    store=persistent_store,
+                    max_events=al_cfg.get("max_events", 10000),
+                )
+                agent.security_audit_log = persistent_audit
+                logger.info("Security audit log upgraded to persistent")
+
+            # Upgrade benchmark to persistent version if available
+            if agent.benchmark is not None:
+                from .core.persistent_benchmark import PersistentPerformanceBenchmark
+                pb_cfg = config.get("observability", {}).get("performance_benchmarking", {})
+                persistent_bench = PersistentPerformanceBenchmark(
+                    store=persistent_store,
+                    max_runs=pb_cfg.get("max_runs", 1000),
+                )
+                agent.benchmark = persistent_bench
+                logger.info("Performance benchmark upgraded to persistent")
+
+            # Auto-cleanup if configured
+            retention_days = ps_cfg.get("retention_days", 90)
+            if ps_cfg.get("auto_cleanup", True) and retention_days > 0:
+                import time as _time
+                cutoff = _time.time() - (retention_days * 86400)
+                deleted = persistent_store.metrics.delete_before(cutoff)
+                deleted += persistent_store.audit.delete_before(cutoff)
+                deleted += persistent_store.benchmarks.delete_before(cutoff)
+                if deleted > 0:
+                    logger.info(f"Auto-cleanup: removed {deleted} old records (>{retention_days}d)")
+
+            logger.info("Sprint 19: Persistent storage initialized")
+    except Exception as e:
+        logger.warning(f"Sprint 19 persistent storage not available: {e}")
+
     # ── Sprint 18: Wire Git Operations, File Locks, Workspace Context ──
     try:
         if config.get("git.enabled", True):

@@ -103,6 +103,9 @@ class Agent:
         self.rate_limiter = None           # RateLimiter instance
         self.security_audit_log = None     # SecurityAuditLog instance
 
+        # Sprint 19: Persistent Storage (set by main.py)
+        self.persistent_store = None       # PersistentStore instance
+
         # Callbacks for UI updates
         self.on_tool_start = on_tool_start
         self.on_tool_end = on_tool_end
