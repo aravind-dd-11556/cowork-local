@@ -68,6 +68,18 @@ export COWORK_LLM_PROVIDER="anthropic"
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
+**Option D — OpenRouter (access 200+ models via one API):**
+
+```bash
+export COWORK_LLM_PROVIDER="openrouter"
+export OPENROUTER_API_KEY="sk-or-..."
+
+# Use any model available on OpenRouter
+export COWORK_LLM_MODEL="anthropic/claude-sonnet-4"     # or
+export COWORK_LLM_MODEL="openai/gpt-4o"                  # or
+export COWORK_LLM_MODEL="meta-llama/llama-3.1-70b-instruct"
+```
+
 ### 4. Set Up Web Search (Before Launching the Agent)
 
 The agent includes web search and URL fetch tools powered by SearXNG (search engine) and Ollama (content processing). These are optional — the agent works fine without them — but if you want web search capabilities, complete these steps **before** launching the agent.
@@ -422,7 +434,8 @@ cowork_agent/
 │       ├── base.py                 # BaseLLMProvider interface + factory
 │       ├── ollama.py               # Ollama provider (local LLMs)
 │       ├── openai_provider.py      # OpenAI provider
-│       └── anthropic_provider.py   # Anthropic provider
+│       ├── anthropic_provider.py   # Anthropic provider
+│       └── openrouter_provider.py  # OpenRouter provider (200+ models)
 ├── tools/
 │   ├── base.py                     # BaseTool interface
 │   ├── bash.py                     # Shell command execution (sandboxed)
@@ -521,12 +534,14 @@ All settings can be set via `default_config.yaml`, a custom YAML file (`-c`), or
 
 | Env Variable | Config Key | Default | Description |
 |-------------|------------|---------|-------------|
-| `COWORK_LLM_PROVIDER` | `llm.provider` | `ollama` | LLM provider: ollama, openai, anthropic |
+| `COWORK_LLM_PROVIDER` | `llm.provider` | `ollama` | LLM provider: ollama, openai, anthropic, openrouter |
 | `COWORK_LLM_MODEL` | `llm.model` | `qwen3-vl:235b-instruct-cloud` | Model name |
 | `COWORK_LLM_TEMPERATURE` | `llm.temperature` | `0.7` | Sampling temperature |
 | `OLLAMA_BASE_URL` | `providers.ollama.base_url` | `http://localhost:11434` | Ollama server URL |
 | `OPENAI_API_KEY` | `providers.openai.api_key` | — | OpenAI API key |
 | `ANTHROPIC_API_KEY` | `providers.anthropic.api_key` | — | Anthropic API key |
+| `OPENROUTER_API_KEY` | `providers.openrouter.api_key` | — | OpenRouter API key |
+| `OPENROUTER_BASE_URL` | `providers.openrouter.base_url` | `https://openrouter.ai/api/v1` | OpenRouter endpoint |
 | `COWORK_WORKSPACE` | `agent.workspace_dir` | `./workspace` | Working directory |
 
 ## Architecture Overview

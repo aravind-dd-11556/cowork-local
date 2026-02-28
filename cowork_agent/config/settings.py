@@ -81,6 +81,8 @@ def load_config(config_path: Optional[str] = None) -> Config:
         "OPENAI_API_KEY": "providers.openai.api_key",
         "OPENAI_BASE_URL": "providers.openai.base_url",
         "ANTHROPIC_API_KEY": "providers.anthropic.api_key",
+        "OPENROUTER_API_KEY": "providers.openrouter.api_key",
+        "OPENROUTER_BASE_URL": "providers.openrouter.base_url",
         "COWORK_WORKSPACE": "agent.workspace_dir",
     }
 

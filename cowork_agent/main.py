@@ -34,10 +34,12 @@ from .interfaces.cli import CLI
 from .core.providers.ollama import OllamaProvider
 from .core.providers.openai_provider import OpenAIProvider
 from .core.providers.anthropic_provider import AnthropicProvider
+from .core.providers.openrouter_provider import OpenRouterProvider
 
 ProviderFactory.register("ollama", OllamaProvider)
 ProviderFactory.register("openai", OpenAIProvider)
 ProviderFactory.register("anthropic", AnthropicProvider)
+ProviderFactory.register("openrouter", OpenRouterProvider)
 
 
 def setup_logging(level: str = "WARNING") -> None:
