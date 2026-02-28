@@ -37,6 +37,7 @@ class SlackBotInterface(BaseInterface):
     """
 
     MAX_MESSAGE_LEN = 3000  # Slack limit is ~4000 but leave margin
+    STREAM_UPDATE_INTERVAL = 1.5  # seconds between progressive Slack updates
 
     def __init__(
         self,
@@ -84,8 +85,20 @@ class SlackBotInterface(BaseInterface):
 
     # ── Message Handler ─────────────────────────────────────────
 
+    async def _update_slack_message(self, client, channel: str, ts: str, text: str) -> bool:
+        """Update a Slack message, truncating to MAX_MESSAGE_LEN. Returns True on success."""
+        if len(text) > self.MAX_MESSAGE_LEN:
+            suffix = "\n\n_…truncated…_"
+            text = text[:self.MAX_MESSAGE_LEN - len(suffix)] + suffix
+        try:
+            await client.chat_update(channel=channel, ts=ts, text=text)
+            return True
+        except Exception as e:
+            logger.debug(f"Failed to update message: {e}")
+            return False
+
     async def _handle_message(self, body: dict, say, client) -> None:
-        """Process an incoming Slack message."""
+        """Process an incoming Slack message with progressive streaming."""
         event = body.get("event", {})
         user_id = event.get("user", "")
         channel = event.get("channel", "")
@@ -97,7 +110,6 @@ class SlackBotInterface(BaseInterface):
             print(f"[Slack] Skipping: no text or user_id (text={text!r}, user={user_id!r})")
             return
 
-        # Skip bot messages and message edits/deletes
         if event.get("bot_id") or subtype in ("bot_message", "message_changed", "message_deleted"):
             print(f"[Slack] Skipping bot/edit message (bot_id={event.get('bot_id')}, subtype={subtype})")
             return
@@ -105,7 +117,7 @@ class SlackBotInterface(BaseInterface):
         print(f"[Slack] Processing message from {user_id}: {text[:80]}")
         agent = self._get_agent(user_id)
 
-        # Post "thinking" message
+        # Post initial "thinking" message
         try:
             thinking = await say(
                 text=":hourglass_flowing_sand: Processing...",
@@ -116,69 +128,96 @@ class SlackBotInterface(BaseInterface):
             logger.error(f"Failed to post thinking message: {e}")
             thinking_ts = ""
 
-        # Wire tool callbacks for this message
-        tool_msgs: list[str] = []
+        # Wire tool callbacks — update Slack in real-time
+        tool_lines: list[str] = []
+        active_tools: dict[str, float] = {}
+
+        def _build_status_header() -> str:
+            parts = []
+            for tl in tool_lines:
+                parts.append(tl)
+            for name, started in active_tools.items():
+                elapsed = time.monotonic() - started
+                parts.append(f":gear: `{name}` running ({elapsed:.0f}s)…")
+            return "\n".join(parts)
 
         def on_tool_start(call: ToolCall) -> None:
-            tool_msgs.append(f":hammer_and_wrench: `{call.name}` running...")
+            active_tools[call.name] = time.monotonic()
 
         def on_tool_end(call: ToolCall, result: ToolResult) -> None:
+            active_tools.pop(call.name, None)
             icon = ":white_check_mark:" if result.success else ":x:"
-            tool_msgs.append(f"{icon} `{call.name}` done")
+            tool_lines.append(f"{icon} `{call.name}` done")
 
         agent.on_tool_start = on_tool_start
         agent.on_tool_end = on_tool_end
 
-        # Run agent
+        # Stream agent response with periodic Slack updates
+        response_parts: list[str] = []
+        last_update = 0.0
+        stream_error = None
+
         try:
-            response_parts: list[str] = []
             async for chunk in agent.run_stream(text):
                 response_parts.append(chunk)
-            response = "".join(response_parts)
+                now = time.monotonic()
+
+                if thinking_ts and (now - last_update) >= self.STREAM_UPDATE_INTERVAL:
+                    accumulated = "".join(response_parts)
+                    status = _build_status_header()
+                    if status and accumulated:
+                        display = f"{status}\n\n---\n\n{accumulated}\n\n_…streaming…_"
+                    elif accumulated:
+                        display = f"{accumulated}\n\n_…streaming…_"
+                    elif status:
+                        display = f"{status}\n\n:hourglass_flowing_sand: Generating response…"
+                    else:
+                        display = ":hourglass_flowing_sand: Generating response…"
+
+                    await self._update_slack_message(client, channel, thinking_ts, display)
+                    last_update = now
+
         except Exception as e:
             logger.error(f"Agent error: {e}")
-            response = f"Error: {e}"
+            stream_error = e
 
-        # Post tool summary in thread
-        if tool_msgs:
+        response = "".join(response_parts)
+        if stream_error and not response:
+            response = f"Error: {stream_error}"
+
+        # Post tool summary in thread if there were tool calls
+        if tool_lines:
             try:
-                await say(
-                    text="\n".join(tool_msgs),
-                    thread_ts=thread_ts,
-                )
+                await say(text="\n".join(tool_lines), thread_ts=thread_ts)
             except Exception as e:
                 logger.error(f"Failed to post tool summary: {e}")
 
-        # Update thinking message with response
+        # Final update — replace the streaming message with the complete response
         if response:
             parts = self.split_message(response)
-            try:
-                await client.chat_update(
-                    channel=channel,
-                    ts=thinking_ts,
-                    text=parts[0],
-                )
-            except Exception:
+            if thinking_ts:
+                ok = await self._update_slack_message(client, channel, thinking_ts, parts[0])
+                if not ok:
+                    try:
+                        await say(text=parts[0], thread_ts=thread_ts)
+                    except Exception as e:
+                        logger.error(f"Failed to post response: {e}")
+            else:
                 try:
                     await say(text=parts[0], thread_ts=thread_ts)
                 except Exception as e:
                     logger.error(f"Failed to post response: {e}")
 
-            # Additional parts in thread
             for part in parts[1:]:
                 try:
                     await say(text=part, thread_ts=thread_ts)
                 except Exception as e:
                     logger.error(f"Failed to post part: {e}")
         else:
-            try:
-                await client.chat_update(
-                    channel=channel,
-                    ts=thinking_ts,
-                    text="(No response from agent)",
+            if thinking_ts:
+                await self._update_slack_message(
+                    client, channel, thinking_ts, "(No response from agent)"
                 )
-            except Exception:
-                pass
 
     # ── ask_user via Block Kit ──────────────────────────────────
 
