@@ -106,6 +106,11 @@ class Agent:
         # Sprint 19: Persistent Storage (set by main.py)
         self.persistent_store = None       # PersistentStore instance
 
+        # Sprint 23: Anthropic-grade Security Pipeline (set by main.py)
+        self.security_pipeline = None      # SecurityPipeline instance
+        self.consent_manager = None        # ConsentManager instance
+        self.privacy_guard = None          # PrivacyGuard instance
+
         # Sprint 20: Dashboard (set by main.py)
         self.dashboard_provider = None     # DashboardDataProvider instance
 
@@ -198,10 +203,22 @@ class Agent:
         Runs the full tool-use loop until the LLM produces a text response
         or max iterations are reached.
         """
-        # Add user message to memory
-        self._messages.append(
-            Message(role="user", content=user_input)
-        )
+        # Sprint 23: Pre-input validation via security pipeline
+        if self.security_pipeline:
+            input_validation = self.security_pipeline.validate_input(user_input)
+            # Log warnings but don't block user input (user is trusted)
+            for check in input_validation.checks:
+                if check.severity in ("warning", "critical") and not check.passed:
+                    logger.info(f"[SECURITY] Input check: {check.message}")
+
+        # Add user message to memory with trust context
+        user_msg = Message(role="user", content=user_input)
+        try:
+            from .trust_context import TrustContext
+            user_msg.trust_context = TrustContext.for_user_message()
+        except ImportError:
+            pass
+        self._messages.append(user_msg)
 
         final_text = ""
         self._iteration = 0
@@ -560,7 +577,7 @@ class Agent:
 
     # Prefixes that indicate a policy block (not an execution failure).
     # Circuit breaker should NOT count these as tool failures.
-    POLICY_BLOCK_PREFIXES = ("[CIRCUIT BREAKER]", "[PLAN MODE]", "[SAFETY]", "[VALIDATION]", "[PERMISSION]")
+    POLICY_BLOCK_PREFIXES = ("[CIRCUIT BREAKER]", "[PLAN MODE]", "[SAFETY]", "[VALIDATION]", "[PERMISSION]", "[SECURITY]", "[CONSENT]")
 
     async def _execute_tools(self, tool_calls: list[ToolCall]) -> list[ToolResult]:
         """
@@ -614,6 +631,29 @@ class Agent:
                     if self.on_tool_end:
                         self.on_tool_end(call, perm_result)
                     results[i] = perm_result
+                    continue
+
+            # ── Sprint 23: Security pipeline — action classification + input validation ──
+            if self.security_pipeline:
+                pipeline_result = self.security_pipeline.validate_tool_call(
+                    tool_name=call.name,
+                    tool_input=call.input,
+                )
+                if not pipeline_result.success:
+                    # Prohibited action — block before execution
+                    msg = pipeline_result.checks[0].message if pipeline_result.checks else "Blocked by security pipeline"
+                    logger.warning(f"Security pipeline blocked {call.name}: {msg}")
+                    if self.on_tool_start:
+                        self.on_tool_start(call)
+                    blocked_result = ToolResult(
+                        tool_id=call.tool_id,
+                        success=False,
+                        output="",
+                        error=f"[SECURITY] {msg}",
+                    )
+                    if self.on_tool_end:
+                        self.on_tool_end(call, blocked_result)
+                    results[i] = blocked_result
                     continue
 
             # ── Plan mode check — restrict to read-only tools ──
@@ -681,6 +721,34 @@ class Agent:
             executed = await self.registry.execute_parallel(calls_only)
 
             for (idx, call), result in zip(safe_calls, executed):
+                # Sprint 23: Post-execution output validation
+                if self.security_pipeline and result.output:
+                    output_validation = self.security_pipeline.validate_tool_output(
+                        output=result.output,
+                        tool_name=call.name,
+                        tool_input=call.input,
+                    )
+                    # Apply credential redaction if needed
+                    if output_validation.redacted_output:
+                        result = ToolResult(
+                            tool_id=result.tool_id,
+                            success=result.success,
+                            output=output_validation.redacted_output,
+                            error=result.error,
+                            metadata=result.metadata,
+                        )
+                    # Log any security warnings
+                    for check in output_validation.checks:
+                        if not check.passed:
+                            logger.info(f"[SECURITY] Output check for {call.name}: {check.message}")
+
+                # Sprint 23: Add trust context to tool result
+                try:
+                    from .trust_context import TrustContext
+                    result.trust_context = TrustContext.for_tool_result(call.name)
+                except (ImportError, AttributeError):
+                    pass
+
                 if self.on_tool_end:
                     self.on_tool_end(call, result)
                 results[idx] = result

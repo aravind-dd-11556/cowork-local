@@ -45,6 +45,8 @@ class ToolResult:
     output: str
     error: Optional[str] = None
     metadata: dict = field(default_factory=dict)
+    # Sprint 23: Trust context — tracks content origin and trust level
+    trust_context: Optional[Any] = None  # TrustContext instance (optional import)
 
 
 @dataclass
@@ -58,6 +60,8 @@ class Message:
     # Sprint 11: Advanced Memory System
     importance_score: Optional[float] = None  # 0.0–1.0 weight for pruning
     memory_id: Optional[str] = None           # Unique ID for cross-session tracking
+    # Sprint 23: Trust context — tracks content origin and trust level
+    trust_context: Optional[Any] = None  # TrustContext instance (optional import)
 
 
 @dataclass

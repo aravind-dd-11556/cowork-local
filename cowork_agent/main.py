@@ -691,6 +691,41 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"Sprint 17 security not available: {e}")
 
+    # ── Sprint 23: Anthropic-Grade Security Pipeline ──────────────────
+    try:
+        from .core.action_classifier import ActionClassifier
+        from .core.instruction_detector import InstructionDetector
+        from .core.security_pipeline import SecurityPipeline
+        from .core.privacy_guard import PrivacyGuard
+        from .core.consent_manager import ConsentManager
+
+        s23_cfg = config.get("security_pipeline", {})
+        if s23_cfg.get("enabled", True):
+            action_classifier = ActionClassifier()
+            instruction_detector = InstructionDetector(
+                risk_threshold=s23_cfg.get("instruction_risk_threshold", 0.15),
+            )
+            privacy_guard = PrivacyGuard()
+            consent_manager = ConsentManager()
+
+            security_pipeline = SecurityPipeline(
+                input_sanitizer=agent.input_sanitizer,
+                prompt_injection_detector=agent.prompt_injection_detector,
+                credential_detector=agent.credential_detector,
+                instruction_detector=instruction_detector,
+                action_classifier=action_classifier,
+                privacy_guard=privacy_guard,
+                security_audit_log=agent.security_audit_log,
+                permission_manager=agent.permission_manager,
+            )
+
+            agent.security_pipeline = security_pipeline
+            agent.consent_manager = consent_manager
+            agent.privacy_guard = privacy_guard
+            logger.info("Sprint 23: Security pipeline initialized")
+    except Exception as e:
+        logger.warning(f"Sprint 23 security pipeline not available: {e}")
+
     # ── Sprint 19: Persistent Storage ─────────────────────────────────
     try:
         ps_cfg = config.get("persistent_storage", {})
