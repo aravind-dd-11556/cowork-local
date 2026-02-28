@@ -84,6 +84,10 @@ class Agent:
         self._events_enabled: bool = False
         self._cancellation_token: Optional[StreamCancellationToken] = None
 
+        # Sprint 15: Prompt optimization (set by main.py)
+        self.token_estimator = None       # ModelTokenEstimator instance
+        self.prompt_budget_manager = None  # PromptBudgetManager instance
+
         # Callbacks for UI updates
         self.on_tool_start = on_tool_start
         self.on_tool_end = on_tool_end
@@ -100,10 +104,10 @@ class Agent:
             summarizer=self.summarizer,
         )
 
-        # Sprint 11: Sliding window summary
+        # Sprint 11/15: Sliding window summary
         self._sliding_summary: Optional[str] = None
         self._summary_turn_count: int = 0
-        self._SUMMARY_UPDATE_INTERVAL: int = 5  # Update every 5 user turns
+        self._SUMMARY_UPDATE_INTERVAL: int = 3  # Update every 3 user turns (was 5)
 
         # Conversation memory
         self._messages: list[Message] = []
@@ -173,7 +177,13 @@ class Agent:
                 context=context,
             )
 
-            # Prune context if approaching limit
+            # Sprint 15: Proactive pruning at 60% capacity
+            if (self.token_estimator and
+                    self.context_mgr.should_prune_proactively(self._messages, system_prompt)):
+                logger.info("Proactive pruning triggered (60% capacity)")
+                self._messages = self.context_mgr.prune(self._messages, system_prompt)
+
+            # Prune context if approaching limit (75% threshold)
             if self.context_mgr.needs_pruning(self._messages, system_prompt):
                 logger.info("Context pruning triggered before LLM call")
                 if self.on_status:
@@ -1272,20 +1282,39 @@ class Agent:
         # Sprint 11: Update sliding summary if interval reached
         self._maybe_update_summary()
 
+        # Sprint 15: Deduplicate messages before building context
+        if self.token_estimator:
+            deduped = self.context_mgr.deduplicate_messages(self._messages)
+            if len(deduped) < len(self._messages):
+                self._messages = deduped
+
         ctx = {
             "iteration": self._iteration,
         }
 
-        # Sprint 11: Memory context
+        # Sprint 11/15: Memory context with relevance scoring
         if self._sliding_summary:
             ctx["memory_summary"] = self._sliding_summary
+
+        # Get the latest user message for relevance scoring
+        last_user_msg = ""
+        if self._messages:
+            for msg in reversed(self._messages):
+                if msg.role == "user":
+                    last_user_msg = msg.content
+                    break
+
         if self.knowledge_store and self.knowledge_store.size > 0:
-            # Inject recent knowledge entries for the LLM to reference
-            entries = []
-            for cat in ("facts", "preferences", "decisions"):
-                entries.extend(self.knowledge_store.recall_all(cat)[:5])
-            if entries:
-                ctx["knowledge_entries"] = entries
+            if self.token_estimator and last_user_msg:
+                # Sprint 15: Score-based knowledge injection
+                self._inject_scored_knowledge(ctx, last_user_msg)
+            else:
+                # Fallback: original chronological injection
+                entries = []
+                for cat in ("facts", "preferences", "decisions"):
+                    entries.extend(self.knowledge_store.recall_all(cat)[:5])
+                if entries:
+                    ctx["knowledge_entries"] = entries
 
         # Get todos from the todo tool if available (safe — won't crash if missing)
         try:
@@ -1306,11 +1335,6 @@ class Agent:
 
         # Match skills from the latest user message
         if self.skill_registry and self._messages:
-            last_user_msg = ""
-            for msg in reversed(self._messages):
-                if msg.role == "user":
-                    last_user_msg = msg.content
-                    break
             if last_user_msg:
                 matched = self.skill_registry.match_skills(last_user_msg)
                 if matched:
@@ -1318,3 +1342,32 @@ class Agent:
                     logger.info(f"Matched skills: {[s.name for s in matched]}")
 
         return ctx
+
+    def _inject_scored_knowledge(self, ctx: dict, recent_user_message: str) -> None:
+        """
+        Sprint 15: Inject knowledge entries scored by relevance to user message.
+
+        Replaces the chronological top-5-per-category with relevance-ranked entries.
+        """
+        all_entries = []
+        for cat in ("decisions", "preferences", "facts"):
+            all_entries.extend(self.knowledge_store.recall_all(cat))
+
+        if not all_entries:
+            return
+
+        # Score each entry
+        scored = [
+            (self.context_mgr.score_knowledge_entry(entry, recent_user_message), entry)
+            for entry in all_entries
+        ]
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        # Take top entries (max 10)
+        top_entries = [entry for _, entry in scored[:10]]
+        if top_entries:
+            ctx["knowledge_entries"] = top_entries
+            logger.debug(
+                f"Injected {len(top_entries)} scored knowledge entries "
+                f"(top scores: {[f'{s:.2f}' for s, _ in scored[:5]]})"
+            )

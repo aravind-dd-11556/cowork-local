@@ -6,13 +6,15 @@ session totals, and enforces configurable budget caps (max tokens and
 max estimated cost in USD).
 
 Sprint 4 (P2-Advanced) Feature 1.
+Sprint 15: Budget warning thresholds, rolling-average prediction,
+           and remaining-budget queries.
 """
 
 from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +96,14 @@ class TokenTracker:
         self.total_cache_read_tokens: int = 0
         self.total_cache_write_tokens: int = 0
 
+        # Sprint 15: Budget warning thresholds
+        self._budget_thresholds: dict[int, Callable] = {}
+        self._last_threshold_reached: int = 0
+
+        # Sprint 15: Rolling average for prediction
+        self._token_history: list[int] = []
+        self._HISTORY_WINDOW: int = 10
+
     @property
     def total_tokens(self) -> int:
         return self.total_input_tokens + self.total_output_tokens
@@ -111,17 +121,25 @@ class TokenTracker:
         return round(total, 6)
 
     def record(self, usage: TokenUsage) -> None:
-        """Record a single LLM call's token usage."""
+        """Record a single LLM call's token usage and check thresholds."""
         self._calls.append(usage)
         self.total_input_tokens += usage.input_tokens
         self.total_output_tokens += usage.output_tokens
         self.total_cache_read_tokens += usage.cache_read_tokens
         self.total_cache_write_tokens += usage.cache_write_tokens
 
+        # Sprint 15: Track output tokens for prediction
+        self._token_history.append(usage.total_tokens)
+        if len(self._token_history) > self._HISTORY_WINDOW:
+            self._token_history.pop(0)
+
         logger.debug(
             f"Token usage: in={usage.input_tokens} out={usage.output_tokens} "
             f"(session total: {self.total_tokens})"
         )
+
+        # Sprint 15: Check budget thresholds
+        self._check_budget_thresholds()
 
     def check_budget(self) -> None:
         """
@@ -174,6 +192,79 @@ class TokenTracker:
         self.total_output_tokens = 0
         self.total_cache_read_tokens = 0
         self.total_cache_write_tokens = 0
+        self._token_history.clear()
+        self._last_threshold_reached = 0
+
+    # ── Sprint 15: Budget warnings & prediction ──
+
+    def on_threshold_reached(self, percent: int, callback: Callable) -> None:
+        """
+        Register a callback for when token usage reaches a percentage of budget.
+
+        Args:
+            percent: Budget percentage threshold (e.g. 50, 75, 90).
+            callback: Function(threshold_percent: int, remaining: dict) → None.
+        """
+        self._budget_thresholds[percent] = callback
+
+    def remaining_budget(self) -> dict:
+        """
+        Return remaining tokens and cost budget.
+
+        Returns dict with keys: tokens_remaining, tokens_percent_remaining,
+        cost_remaining_usd, cost_percent_remaining.
+        """
+        result: dict = {}
+
+        if self.max_session_tokens:
+            remaining = max(0, self.max_session_tokens - self.total_tokens)
+            result["tokens_remaining"] = remaining
+            result["tokens_percent_remaining"] = round(
+                (remaining / self.max_session_tokens) * 100, 1
+            ) if self.max_session_tokens > 0 else 0.0
+        else:
+            result["tokens_remaining"] = None
+            result["tokens_percent_remaining"] = 0.0
+
+        if self.max_cost_usd is not None:
+            remaining_cost = max(0.0, self.max_cost_usd - self.estimated_cost_usd)
+            result["cost_remaining_usd"] = round(remaining_cost, 4)
+            result["cost_percent_remaining"] = round(
+                (remaining_cost / self.max_cost_usd) * 100, 1
+            ) if self.max_cost_usd > 0 else 0.0
+        else:
+            result["cost_remaining_usd"] = None
+            result["cost_percent_remaining"] = 0.0
+
+        return result
+
+    def predict_next_iteration_tokens(self) -> int:
+        """
+        Predict tokens for the next iteration based on rolling average.
+
+        Returns the average of recent call totals × 1.2 buffer,
+        or a conservative default (500) if no history exists.
+        """
+        if not self._token_history:
+            return 500
+        avg = sum(self._token_history) / len(self._token_history)
+        return int(avg * 1.2)
+
+    def _check_budget_thresholds(self) -> None:
+        """Fire threshold callbacks when budget usage crosses configured levels."""
+        if not self.max_session_tokens or not self._budget_thresholds:
+            return
+
+        percent_used = (self.total_tokens / self.max_session_tokens) * 100
+
+        for threshold in sorted(self._budget_thresholds.keys()):
+            if percent_used >= threshold and threshold > self._last_threshold_reached:
+                self._last_threshold_reached = threshold
+                callback = self._budget_thresholds[threshold]
+                try:
+                    callback(threshold, self.remaining_budget())
+                except Exception as e:
+                    logger.warning(f"Budget threshold callback error at {threshold}%: {e}")
 
     # ── internals ──
 

@@ -471,6 +471,70 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"Sprint 14 streaming/cancellation not available: {e}")
 
+    # ── Sprint 15: Prompt Optimization & Context Management ────────────
+    try:
+        po_cfg = config.get("prompt_optimization", {})
+        if po_cfg.get("enabled", True):
+            from .core.token_estimator import ModelTokenEstimator
+            from .core.prompt_budget import PromptBudgetManager
+
+            # Initialize token estimator with model ratios
+            est_cfg = po_cfg.get("token_estimator", {})
+            if est_cfg.get("enabled", True):
+                model_ratios = est_cfg.get("model_ratios", {})
+                token_estimator = ModelTokenEstimator(config=model_ratios)
+                agent.token_estimator = token_estimator
+
+                # Update context manager to use model-aware estimator
+                model_name = getattr(provider, "model", "") or config.get(
+                    f"llm.{config.get('llm.provider', 'ollama')}.model", ""
+                )
+                agent.context_mgr.token_estimator = token_estimator
+                agent.context_mgr.model = model_name
+                logger.info("Token estimator initialized (model-aware)")
+            else:
+                token_estimator = None
+
+            # Initialize prompt budget manager
+            pb_cfg = po_cfg.get("prompt_budget", {})
+            if pb_cfg.get("enabled", True) and token_estimator:
+                agent.prompt_budget_manager = PromptBudgetManager(
+                    max_system_prompt_tokens=pb_cfg.get("max_system_prompt_tokens", 8000),
+                    estimator=token_estimator,
+                    model=getattr(provider, "model", "claude"),
+                )
+                logger.info("Prompt budget manager initialized")
+
+            # Configure context assembly settings
+            ca_cfg = po_cfg.get("context_assembly", {})
+            if ca_cfg.get("proactive_prune_threshold"):
+                agent.context_mgr.PROACTIVE_PRUNE_RATIO = float(
+                    ca_cfg["proactive_prune_threshold"]
+                )
+            if ca_cfg.get("dedup_window"):
+                agent.context_mgr.DEDUP_WINDOW = int(ca_cfg["dedup_window"])
+            if ca_cfg.get("summary_update_interval"):
+                agent._SUMMARY_UPDATE_INTERVAL = int(ca_cfg["summary_update_interval"])
+
+            # Configure budget warning thresholds
+            warn_cfg = po_cfg.get("budget_warnings", {})
+            if warn_cfg.get("enabled", True) and agent.token_tracker:
+                thresholds = warn_cfg.get("thresholds", [50, 75, 90])
+                for threshold in thresholds:
+                    def _make_cb(pct):
+                        def _cb(reached_pct, remaining):
+                            logger.warning(
+                                f"Token budget {reached_pct}% reached — "
+                                f"remaining: {remaining.get('tokens_remaining', '?')} tokens"
+                            )
+                        return _cb
+                    agent.token_tracker.on_threshold_reached(threshold, _make_cb(threshold))
+                logger.info(f"Token budget warnings configured at {thresholds}%")
+
+            logger.info("Sprint 15: Prompt optimization initialized")
+    except Exception as e:
+        logger.warning(f"Sprint 15 prompt optimization not available: {e}")
+
     # ── Sprint 18: Wire Git Operations, File Locks, Workspace Context ──
     try:
         if config.get("git.enabled", True):

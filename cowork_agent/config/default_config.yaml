@@ -96,6 +96,28 @@ cancellation:
   enabled: true
   timeout_after_cancel: 5.0
 
+# Sprint 15: Prompt Optimization & Context Management
+prompt_optimization:
+  enabled: true
+  token_estimator:
+    enabled: true
+    model_ratios:
+      claude: 3.5
+      gpt-4: 4.0
+      gpt-3.5: 4.2
+      ollama: 4.0
+  prompt_budget:
+    enabled: true
+    max_system_prompt_tokens: 8000
+  context_assembly:
+    proactive_prune_threshold: 0.60
+    dedup_window: 10
+    summary_update_interval: 3
+    knowledge_scoring_enabled: true
+  budget_warnings:
+    enabled: true
+    thresholds: [50, 75, 90]
+
 cli:
   history_file: "~/.cowork_agent_history"
   show_tool_execution: true
