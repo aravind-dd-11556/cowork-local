@@ -215,6 +215,12 @@ python -m cowork_agent --mode slack
 python -m cowork_agent --mode all --api-port 8000
 ```
 
+#### Remote Control in Action
+
+![Remote Control Demo](assets/remote-control-demo.gif)
+
+The Slack bot features progressive streaming — responses build in real-time with a `…streaming…` indicator, and live tool status shows elapsed time while tools are running.
+
 ## CLI Commands
 
 | Command | Description |
