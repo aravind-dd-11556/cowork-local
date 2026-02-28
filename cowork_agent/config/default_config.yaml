@@ -118,6 +118,33 @@ prompt_optimization:
     enabled: true
     thresholds: [50, 75, 90]
 
+# Sprint 16: Testing & Observability Hardening
+observability:
+  enabled: true
+  event_bus:
+    enabled: true
+    max_subscribers_per_event: 100
+    async_emit: false
+    event_buffer_size: 1000
+  correlation_ids:
+    enabled: true
+    include_in_logs: true
+    header_name: "X-Correlation-ID"
+  metrics_registry:
+    enabled: true
+    detailed_latency_tracking: false
+    token_usage_tracking: true
+    error_rate_window_seconds: 300
+  performance_benchmarking:
+    enabled: true
+    max_runs: 1000
+  health_orchestrator:
+    enabled: true
+    max_trend_history: 100
+  test_coverage:
+    enabled: false
+    report_format: "json"
+
 cli:
   history_file: "~/.cowork_agent_history"
   show_tool_execution: true

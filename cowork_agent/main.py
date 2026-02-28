@@ -535,6 +535,74 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"Sprint 15 prompt optimization not available: {e}")
 
+    # ── Sprint 16: Testing & Observability Hardening ─────────────────
+    try:
+        obs_cfg = config.get("observability", {})
+        if obs_cfg.get("enabled", True):
+            # Event bus
+            eb_cfg = obs_cfg.get("event_bus", {})
+            if eb_cfg.get("enabled", True):
+                from .core.observability_event_bus import ObservabilityEventBus
+                event_bus = ObservabilityEventBus(
+                    max_subscribers_per_event=eb_cfg.get("max_subscribers_per_event", 100),
+                    async_emit=eb_cfg.get("async_emit", False),
+                    event_buffer_size=eb_cfg.get("event_buffer_size", 1000),
+                )
+                agent.event_bus = event_bus
+                logger.info("Observability event bus initialized")
+            else:
+                event_bus = None
+
+            # Correlation ID manager
+            cid_cfg = obs_cfg.get("correlation_ids", {})
+            if cid_cfg.get("enabled", True):
+                from .core.correlation_id_manager import CorrelationIdManager
+                correlation_mgr = CorrelationIdManager(
+                    header_name=cid_cfg.get("header_name", "X-Correlation-ID"),
+                )
+                agent.correlation_manager = correlation_mgr
+                logger.info("Correlation ID manager initialized")
+            else:
+                correlation_mgr = None
+
+            # Metrics registry (extends existing MetricsCollector)
+            mr_cfg = obs_cfg.get("metrics_registry", {})
+            if mr_cfg.get("enabled", True):
+                from .core.metrics_registry import MetricsRegistry
+                metrics_registry = MetricsRegistry(
+                    error_rate_window_seconds=mr_cfg.get("error_rate_window_seconds", 300),
+                    token_usage_tracking=mr_cfg.get("token_usage_tracking", True),
+                    detailed_latency_tracking=mr_cfg.get("detailed_latency_tracking", False),
+                )
+                agent.metrics_registry = metrics_registry
+                logger.info("Metrics registry initialized")
+
+            # Performance benchmark
+            pb_cfg = obs_cfg.get("performance_benchmarking", {})
+            if pb_cfg.get("enabled", True):
+                from .core.performance_benchmark import PerformanceBenchmark
+                benchmark = PerformanceBenchmark(
+                    max_runs=pb_cfg.get("max_runs", 1000),
+                )
+                agent.benchmark = benchmark
+                logger.info("Performance benchmark initialized")
+
+            # Integrated health orchestrator
+            ho_cfg = obs_cfg.get("health_orchestrator", {})
+            if ho_cfg.get("enabled", True):
+                from .core.integrated_health_orchestrator import IntegratedHealthOrchestrator
+                health_orch = IntegratedHealthOrchestrator(
+                    max_trend_history=ho_cfg.get("max_trend_history", 100),
+                    event_bus=event_bus if eb_cfg.get("enabled", True) else None,
+                    correlation_manager=correlation_mgr if cid_cfg.get("enabled", True) else None,
+                )
+                agent.health_orchestrator = health_orch
+                logger.info("Health orchestrator initialized")
+
+            logger.info("Sprint 16: Observability hardening initialized")
+    except Exception as e:
+        logger.warning(f"Sprint 16 observability not available: {e}")
+
     # ── Sprint 18: Wire Git Operations, File Locks, Workspace Context ──
     try:
         if config.get("git.enabled", True):

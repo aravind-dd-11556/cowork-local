@@ -88,6 +88,13 @@ class Agent:
         self.token_estimator = None       # ModelTokenEstimator instance
         self.prompt_budget_manager = None  # PromptBudgetManager instance
 
+        # Sprint 16: Observability (set by main.py)
+        self.event_bus = None              # ObservabilityEventBus instance
+        self.correlation_manager = None    # CorrelationIdManager instance
+        self.metrics_registry = None       # MetricsRegistry instance
+        self.benchmark = None              # PerformanceBenchmark instance
+        self.health_orchestrator = None    # IntegratedHealthOrchestrator instance
+
         # Callbacks for UI updates
         self.on_tool_start = on_tool_start
         self.on_tool_end = on_tool_end
@@ -130,6 +137,31 @@ class Agent:
     def messages(self) -> list[Message]:
         return list(self._messages)
 
+    # ── Sprint 16: Observability helpers ─────────────────────────
+
+    def _emit_observability_event(
+        self,
+        event_type_name: str,
+        component: str = "agent",
+        severity: str = "info",
+        metadata: dict | None = None,
+    ) -> None:
+        """Emit an observability event if event bus is attached."""
+        if self.event_bus is None:
+            return
+        try:
+            from .observability_event_bus import ObservabilityEvent, EventType
+            et = EventType(event_type_name) if event_type_name in [e.value for e in EventType] else EventType.CUSTOM
+            event = ObservabilityEvent(
+                event_type=et,
+                component=component,
+                severity=severity,
+                metadata=metadata or {},
+            )
+            self.event_bus.emit(event)
+        except Exception as exc:
+            logger.debug("Failed to emit observability event: %s", exc)
+
     def clear_history(self) -> None:
         """Reset conversation memory."""
         self._messages.clear()
@@ -165,6 +197,12 @@ class Agent:
         self._root_span = self._tracer.start_span(
             "agent.run", user_input=user_input[:200]
         )
+
+        # Sprint 16: Emit agent-started event
+        self._emit_observability_event("agent_started", metadata={
+            "user_input_length": len(user_input),
+            "max_iterations": self.max_iterations,
+        })
 
         while self._iteration < self.max_iterations:
             self._iteration += 1
