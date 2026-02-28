@@ -53,8 +53,10 @@ A modular AI agent framework inspired by Anthropic's Cowork mode — built from 
 - **WebSocket** — Real-time bidirectional chat with JSON protocol
 - **Web Dashboard** — Browser-based chat UI with dark/light theme, tool indicators, export
 - **Telegram Bot** — Per-user sessions, inline keyboards for ask_user, message splitting
-- **Slack Bot** — Socket Mode, Block Kit buttons, threaded tool indicators
+- **Slack Bot** — Socket Mode, Block Kit buttons, progressive streaming, live tool status
 - **`/remote-control` CLI command** — Start/stop any interface live from the running CLI
+
+![Remote Control Demo](https://bucketest-development.zohostratus.com/RemoteControl-Cowork.gif)
 
 ### Developer Experience
 - Automated code review via pre-commit hook (AST analysis, secret scanning, quality checks)
