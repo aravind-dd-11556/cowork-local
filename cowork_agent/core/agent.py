@@ -25,6 +25,12 @@ from .tool_permissions import ToolPermissionManager
 # Sprint 11: Advanced Memory System
 from .conversation_summarizer import ConversationSummarizer
 from .knowledge_store import KnowledgeStore
+# Sprint 14: Streaming Events & Cancellation
+from .stream_events import (
+    StreamEvent, TextChunk, ToolStart, ToolProgress, ToolEnd, StatusUpdate,
+)
+from .stream_cancellation import StreamCancellationToken, StreamCancelledError
+from .tool_progress import ProgressTracker
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +80,9 @@ class Agent:
         self.response_cache = None    # ResponseCache instance
         self.stream_hardener = None   # StreamHardener instance
         self.retry_executor = None    # RetryExecutor instance
+        # Sprint 14: Streaming events & cancellation (set by main.py)
+        self._events_enabled: bool = False
+        self._cancellation_token: Optional[StreamCancellationToken] = None
 
         # Callbacks for UI updates
         self.on_tool_start = on_tool_start
@@ -926,6 +935,322 @@ class Agent:
             # Continue loop — next LLM call will be streamed
 
         yield f"\n[Agent reached maximum iterations ({self.max_iterations}).]"
+
+    # ── Sprint 14: Streaming Events ─────────────────────────
+
+    async def run_stream_events(
+        self,
+        user_input: str,
+        cancellation_token: Optional[StreamCancellationToken] = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """
+        Process a user message with structured streaming events.
+
+        Like run_stream(), but yields StreamEvent objects instead of raw strings.
+        Supports cancellation via token and progress tracking for tools.
+
+        Events emitted:
+          - TextChunk: streaming text from LLM
+          - ToolStart: before tool execution
+          - ToolProgress: during long-running tool execution
+          - ToolEnd: after tool execution with result and timing
+          - StatusUpdate: agent status (pruning, retrying, cancellation)
+        """
+        token = cancellation_token or self._cancellation_token
+
+        # Add user message to memory
+        self._messages.append(Message(role="user", content=user_input))
+
+        self._iteration = 0
+        truncation_retries = 0
+        intent_nudges = 0
+        self._consecutive_empty_responses = 0
+        self._tool_failure_counts.clear()
+        self._recent_tool_signatures.clear()
+
+        accumulated_text = ""
+
+        while self._iteration < self.max_iterations:
+            self._iteration += 1
+
+            # Cancellation check — before LLM call
+            if token and token.is_cancelled:
+                yield StatusUpdate(message="Stream cancelled", severity="warning")
+                return
+
+            context = self._build_context()
+            system_prompt = self.prompt_builder.build(
+                tools=self.registry.get_schemas(),
+                context=context,
+            )
+
+            if self.context_mgr.needs_pruning(self._messages, system_prompt):
+                self._messages = self.context_mgr.prune(self._messages, system_prompt)
+                yield StatusUpdate(message="Pruning conversation context...", severity="info")
+
+            # Stream from the LLM
+            full_text = ""
+            try:
+                raw_stream = self.provider.send_message_stream(
+                    messages=self._messages,
+                    tools=self.registry.get_schemas(),
+                    system_prompt=system_prompt,
+                )
+                if self.stream_hardener:
+                    stream = self.stream_hardener.wrap(raw_stream)
+                else:
+                    stream = raw_stream
+
+                async for chunk in stream:
+                    # Cancellation check — after each chunk
+                    if token and token.is_cancelled:
+                        yield StatusUpdate(message="Stream cancelled", severity="warning")
+                        return
+                    full_text += chunk
+                    yield TextChunk(text=chunk)
+
+            except StreamCancelledError:
+                yield StatusUpdate(message="Stream cancelled", severity="warning")
+                return
+            except Exception as e:
+                error_text = f"Error communicating with LLM: {str(e)}"
+                self._messages.append(Message(role="assistant", content=error_text))
+                yield StatusUpdate(message=error_text, severity="warning")
+                return
+
+            # Get the parsed response from the provider
+            response = self.provider.last_stream_response
+            if response is None:
+                if full_text:
+                    self._messages.append(Message(role="assistant", content=full_text))
+                return
+
+            # ── Empty response handling ──
+            if not response.text and not response.tool_calls:
+                self._consecutive_empty_responses += 1
+                if self._consecutive_empty_responses >= self.MAX_EMPTY_RESPONSES:
+                    msg = "The language model returned empty responses repeatedly."
+                    self._messages.append(Message(role="assistant", content=msg))
+                    yield StatusUpdate(message=msg, severity="warning")
+                    return
+                self._messages.append(Message(role="assistant", content=""))
+                self._messages.append(
+                    Message(role="user", content="Your previous response was empty. Please respond.")
+                )
+                yield StatusUpdate(message="Empty response, retrying...", severity="info")
+                continue
+            else:
+                self._consecutive_empty_responses = 0
+
+            if response.text:
+                accumulated_text += response.text
+
+            # ── Truncation recovery ──
+            if response.stop_reason == "max_tokens" and not response.tool_calls:
+                truncation_retries += 1
+                if truncation_retries <= self.MAX_TRUNCATION_RETRIES:
+                    self._messages.append(Message(role="assistant", content=response.text or ""))
+                    self._messages.append(
+                        Message(
+                            role="user",
+                            content=(
+                                "Your previous response was cut off before the tool call "
+                                "could be completed. Please try again — call the tool directly "
+                                "with shorter content. Output ONLY the tool_calls JSON block."
+                            ),
+                        )
+                    )
+                    yield StatusUpdate(
+                        message=f"Response truncated, retry {truncation_retries}...",
+                        severity="info",
+                    )
+                    accumulated_text = ""
+                    continue
+                else:
+                    fallback = (
+                        "\n\n[The content was too long to fit in a single tool call. "
+                        "Try asking for shorter content.]"
+                    )
+                    text = (response.text or "") + fallback
+                    self._messages.append(Message(role="assistant", content=text))
+                    yield TextChunk(text=fallback)
+                    return
+
+            # No tool calls — check intent, then return
+            if not response.tool_calls:
+                text = response.text or full_text
+                intent_type = self._detect_unfulfilled_intent(text)
+                if intent_type:
+                    intent_nudges += 1
+                    if intent_nudges <= self.MAX_INTENT_NUDGES:
+                        self._messages.append(Message(role="assistant", content=text))
+                        if intent_type == "code_block_dump":
+                            nudge = (
+                                "You showed file content as a code block. That does NOT create a file. "
+                                "You MUST use the write tool. Call it now — output ONLY the tool_calls JSON."
+                            )
+                        else:
+                            nudge = (
+                                "You said you would use a tool but didn't include a tool_calls JSON block. "
+                                "Please proceed with the actual tool call now."
+                            )
+                        self._messages.append(Message(role="user", content=nudge))
+                        accumulated_text = ""
+                        continue
+
+                self._messages.append(Message(role="assistant", content=text))
+                return
+
+            # ── Tool calls found — execute with events ──
+            truncation_retries = 0
+            intent_nudges = 0
+
+            self._messages.append(
+                Message(role="assistant", content=response.text or "", tool_calls=response.tool_calls)
+            )
+
+            # Execute tools with event emission
+            import time as _time
+            results = []
+            for call in response.tool_calls:
+                # Cancellation check — before each tool
+                if token and token.is_cancelled:
+                    yield StatusUpdate(message="Stream cancelled during tool execution", severity="warning")
+                    return
+
+                yield ToolStart(tool_call=call)
+                tool_start = _time.time()
+
+                # Create progress callback that yields ToolProgress events
+                progress_events: list[ToolProgress] = []
+
+                def _make_progress_cb(tc: ToolCall):
+                    def _cb(pct: int, msg: str):
+                        progress_events.append(ToolProgress(
+                            tool_call=tc,
+                            progress_percent=pct,
+                            message=msg,
+                        ))
+                    return _cb
+
+                # Execute the single tool
+                single_results = await self._execute_tools_with_progress(
+                    [call], _make_progress_cb(call),
+                )
+                result = single_results[0]
+
+                # Yield any accumulated progress events
+                for pe in progress_events:
+                    yield pe
+
+                duration = (_time.time() - tool_start) * 1000
+                yield ToolEnd(tool_call=call, result=result, duration_ms=duration)
+                results.append(result)
+
+            # Track failures and successes
+            for call, result in zip(response.tool_calls, results):
+                if result.success:
+                    self._tool_failure_counts[call.name] = 0
+                    self._record_tool_signature(call)
+                elif self._is_policy_block(result):
+                    pass
+                else:
+                    self._tool_failure_counts[call.name] += 1
+
+            # Check for circular loop
+            loop_detected = self._detect_circular_loop()
+            if loop_detected:
+                loop_msg = (
+                    f"I noticed I'm calling the same tool ({loop_detected}) repeatedly "
+                    f"with the same arguments. Let me reconsider my approach."
+                )
+                self._messages.append(Message(role="assistant", content=loop_msg))
+                self._messages.append(
+                    Message(
+                        role="user",
+                        content=(
+                            f"You were calling '{loop_detected}' in a loop with the same "
+                            f"arguments. Try a DIFFERENT approach or explain what's blocking you."
+                        ),
+                    )
+                )
+                yield StatusUpdate(message=loop_msg, severity="warning")
+                accumulated_text = ""
+                continue
+
+            self._messages.append(
+                Message(role="tool_result", content="", tool_results=results)
+            )
+
+        yield StatusUpdate(
+            message=f"Agent reached maximum iterations ({self.max_iterations}).",
+            severity="warning",
+        )
+
+    async def _execute_tools_with_progress(
+        self,
+        tool_calls: list[ToolCall],
+        progress_callback=None,
+    ) -> list[ToolResult]:
+        """
+        Execute tool calls with an optional progress callback.
+
+        Wraps _execute_tools logic for single tool + progress callback support.
+        Falls back to standard _execute_tools for multiple calls.
+        """
+        if len(tool_calls) != 1 or progress_callback is None:
+            return await self._execute_tools(tool_calls)
+
+        call = tool_calls[0]
+        schemas = self.registry.get_schemas()
+
+        # Check circuit breaker
+        if self._tool_failure_counts.get(call.name, 0) >= self.CIRCUIT_BREAKER_THRESHOLD:
+            return [ToolResult(
+                tool_id=call.tool_id, success=False, output="",
+                error=f"[CIRCUIT BREAKER] Tool '{call.name}' has failed too many times.",
+            )]
+
+        # Permission check
+        if self.permission_manager:
+            perm_ok, perm_reason = self.permission_manager.check_all(call.name)
+            if not perm_ok:
+                return [ToolResult(
+                    tool_id=call.tool_id, success=False, output="",
+                    error=f"[PERMISSION] {perm_reason}",
+                )]
+
+        # Plan mode check
+        if self.plan_manager and self.plan_manager.is_plan_mode:
+            allowed, reason = self.plan_manager.is_tool_allowed(call.name)
+            if not allowed:
+                return [ToolResult(
+                    tool_id=call.tool_id, success=False, output="",
+                    error=f"[PLAN MODE] {reason}",
+                )]
+
+        # Safety check
+        check = self.safety.check(call, schemas)
+        if check.blocked:
+            return [check.to_tool_result(call.tool_id)]
+
+        # Validation
+        validation_error = self.safety.validate_tool_inputs(call, schemas)
+        if validation_error:
+            return [ToolResult(
+                tool_id=call.tool_id, success=False, output="",
+                error=f"[VALIDATION] {validation_error}",
+            )]
+
+        # Execute with progress callback
+        try:
+            result = await self.registry.execute_with_progress(call, progress_callback)
+        except Exception as e:
+            result = ToolResult(
+                tool_id=call.tool_id, success=False, output="",
+                error=f"Execution error: {str(e)}",
+            )
+        return [result]
 
     # ── Sprint 11: Sliding summary ─────────────────────────
 

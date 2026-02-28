@@ -534,7 +534,13 @@ class CLI:
         print()
 
     async def _run_streaming(self, user_input: str) -> str:
-        """Run agent with streaming display — print tokens as they arrive."""
+        """Run agent with streaming display — print tokens as they arrive.
+
+        When the agent has ``run_stream_events()`` enabled, consumes
+        structured StreamEvent objects and renders each type appropriately
+        (progress bars for tools, status messages, etc.).  Otherwise falls
+        back to the raw ``run_stream()`` text-chunk path.
+        """
         self._spinner.stop()
         self._is_streaming = True
 
@@ -544,25 +550,103 @@ class CLI:
         saved_level = root_logger.level
         root_logger.setLevel(logging.WARNING)
 
-        with _stdout_lock:
-            sys.stdout.write(f"\n{Colors.BOLD}{Colors.GREEN}Agent ▸{Colors.RESET} ")
-            sys.stdout.flush()
-
         full_response = ""
         try:
-            async for chunk in self.agent.run_stream(user_input):
+            # Prefer structured events when the agent supports them
+            if getattr(self.agent, '_events_enabled', False):
+                full_response = await self._run_stream_events(user_input)
+            else:
                 with _stdout_lock:
-                    sys.stdout.write(chunk)
+                    sys.stdout.write(f"\n{Colors.BOLD}{Colors.GREEN}Agent ▸{Colors.RESET} ")
                     sys.stdout.flush()
-                full_response += chunk
+
+                async for chunk in self.agent.run_stream(user_input):
+                    with _stdout_lock:
+                        sys.stdout.write(chunk)
+                        sys.stdout.flush()
+                    full_response += chunk
+
+                with _stdout_lock:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
         finally:
             # Restore logging level and streaming flag
             root_logger.setLevel(saved_level)
             self._is_streaming = False
 
+        return full_response
+
+    # ── Structured-event streaming ────────────────────────────
+
+    async def _run_stream_events(self, user_input: str) -> str:
+        """Consume ``run_stream_events()`` and render each event type."""
+        from ..core.stream_events import (
+            TextChunk, ToolStart, ToolProgress, ToolEnd, StatusUpdate,
+        )
+
+        with _stdout_lock:
+            sys.stdout.write(f"\n{Colors.BOLD}{Colors.GREEN}Agent ▸{Colors.RESET} ")
+            sys.stdout.flush()
+
+        full_response = ""
+        cancellation_token = getattr(self.agent, '_cancellation_token', None)
+
+        async for event in self.agent.run_stream_events(
+            user_input, cancellation_token=cancellation_token,
+        ):
+            if isinstance(event, TextChunk):
+                with _stdout_lock:
+                    sys.stdout.write(event.text)
+                    sys.stdout.flush()
+                full_response += event.text
+
+            elif isinstance(event, ToolStart):
+                icon = self._tool_icon(event.tool_call.name)
+                with _stdout_lock:
+                    sys.stdout.write(
+                        f"\n  {Colors.DIM}{icon} Executing "
+                        f"{Colors.CYAN}{event.tool_call.name}{Colors.RESET}"
+                        f"{Colors.DIM}...{Colors.RESET}"
+                    )
+                    sys.stdout.flush()
+
+            elif isinstance(event, ToolProgress):
+                bar = self._rich.stream_progress_bar(
+                    event.progress_percent,
+                    label=event.message[:30],
+                )
+                with _stdout_lock:
+                    # Overwrite the current line with the progress bar
+                    sys.stdout.write(f"\r{bar}")
+                    sys.stdout.flush()
+
+            elif isinstance(event, ToolEnd):
+                duration = event.duration_ms
+                result = event.result
+                output_lines = len(result.output.split("\n")) if result.output else 0
+                line = self._rich.tool_result(
+                    event.tool_call.name, result.success, duration, output_lines,
+                )
+                with _stdout_lock:
+                    # Clear progress bar line and print result
+                    sys.stdout.write(f"\r{' ' * 80}\r{line}\n")
+                    if not result.success and result.error:
+                        sys.stdout.write(self._rich.error(result.error) + "\n")
+                    # Resume text on new line
+                    sys.stdout.flush()
+
+            elif isinstance(event, StatusUpdate):
+                color = Colors.YELLOW if event.severity == "warning" else Colors.DIM
+                with _stdout_lock:
+                    sys.stdout.write(
+                        f"\n  {color}⟳ {event.message}{Colors.RESET}\n"
+                    )
+                    sys.stdout.flush()
+
         with _stdout_lock:
             sys.stdout.write("\n")
             sys.stdout.flush()
+
         return full_response
 
     async def _show_health(self) -> None:

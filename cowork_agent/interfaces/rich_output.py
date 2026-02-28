@@ -251,6 +251,37 @@ class RichOutput:
 
         return self.table(headers, rows)
 
+    # ── Streaming progress bar (percent-based) ────────────────
+
+    def stream_progress_bar(
+        self,
+        percent: int,
+        width: int = 30,
+        label: str = "",
+    ) -> str:
+        """
+        Render a progress bar from a percentage (0–100).
+
+        For indeterminate progress (percent == -1), shows a pulsing bar.
+        Returns a single line suitable for ``\\r`` overwrite.
+
+        Example: ``  Fetching... [████████░░░░░░░░] 40%``
+        """
+        prefix = f"{label} " if label else ""
+
+        if percent == -1:
+            # Indeterminate: pulsing dots
+            return f"  {prefix}{_C.CYAN}[{'·' * width}]{_C.RESET} ..."
+
+        pct = max(0, min(100, percent))
+        filled = int(width * pct / 100)
+        empty = width - filled
+        bar = "█" * filled + "░" * empty
+
+        return (
+            f"  {prefix}{_C.CYAN}[{bar}]{_C.RESET} {pct}%"
+        )
+
     # ── Smart truncation ───────────────────────────────────────
 
     def truncate(

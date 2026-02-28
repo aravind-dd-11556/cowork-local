@@ -49,8 +49,15 @@ class BashTool(BaseTool):
         self._max_output = 30000
 
     async def execute(self, command: str, description: str = "",
-                      timeout: float = 120, tool_id: str = "", **kwargs) -> "ToolResult":
+                      timeout: float = 120, tool_id: str = "",
+                      progress_callback=None, **kwargs) -> "ToolResult":
         timeout = min(timeout, 600)
+
+        if progress_callback:
+            try:
+                progress_callback(0, f"Running: {command[:60]}...")
+            except Exception:
+                pass  # Never let callback errors break tool execution
 
         try:
             process = await asyncio.create_subprocess_shell(
@@ -61,9 +68,15 @@ class BashTool(BaseTool):
             )
 
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=timeout
-                )
+                if progress_callback:
+                    # Poll process with progress updates for long-running commands
+                    stdout, stderr = await self._communicate_with_progress(
+                        process, timeout, progress_callback,
+                    )
+                else:
+                    stdout, stderr = await asyncio.wait_for(
+                        process.communicate(), timeout=timeout
+                    )
             except asyncio.TimeoutError:
                 process.kill()
                 await process.communicate()
@@ -84,6 +97,12 @@ class BashTool(BaseTool):
 
             # Update cwd if command changed directory
             self._update_cwd(command)
+
+            if progress_callback:
+                try:
+                    progress_callback(100, "Command completed")
+                except Exception:
+                    pass
 
             if process.returncode != 0:
                 return self._error(
@@ -123,3 +142,33 @@ class BashTool(BaseTool):
                 new_cwd = os.path.normpath(new_cwd)
                 if os.path.isdir(new_cwd):
                     self._cwd = new_cwd
+
+    async def _communicate_with_progress(
+        self,
+        process: asyncio.subprocess.Process,
+        timeout: float,
+        progress_callback,
+    ) -> tuple[bytes, bytes]:
+        """Communicate with subprocess while reporting progress at intervals."""
+        import time as _time
+        start = _time.time()
+        poll_interval = 2.0  # report every 2 seconds
+        last_report = start
+
+        while True:
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=min(poll_interval, timeout)
+                )
+                return stdout, stderr
+            except asyncio.TimeoutError:
+                elapsed = _time.time() - start
+                if elapsed >= timeout:
+                    raise  # re-raise to let caller handle
+                pct = min(int((elapsed / timeout) * 100), 99)
+                if _time.time() - last_report >= poll_interval:
+                    progress_callback(pct, f"Running... ({elapsed:.0f}s elapsed)")
+                    last_report = _time.time()
+                # Reduce remaining timeout
+                timeout -= elapsed
+                start = _time.time()

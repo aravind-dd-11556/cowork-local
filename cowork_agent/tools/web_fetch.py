@@ -123,6 +123,7 @@ class WebFetchTool(BaseTool):
         url: str,
         prompt: str,
         tool_id: str = "",
+        progress_callback=None,
         **kwargs,
     ) -> "ToolResult":
         # SSRF check: block private/internal network requests
@@ -138,9 +139,14 @@ class WebFetchTool(BaseTool):
         except ImportError as e:
             return self._error(str(e), tool_id)
 
+        if progress_callback:
+            progress_callback(0, f"Fetching {url[:60]}...")
+
         last_error = ""
         for attempt in range(1, MAX_RETRIES + 1):
             try:
+                if progress_callback and attempt > 1:
+                    progress_callback(-1, f"Retry {attempt}/{MAX_RETRIES}...")
                 result = await fetcher.fetch(url=url, prompt=prompt)
 
                 if result.error:
@@ -166,6 +172,8 @@ class WebFetchTool(BaseTool):
 
                 # Use the FetchResult's built-in formatter
                 output = result.to_markdown()
+                if progress_callback:
+                    progress_callback(100, "Fetch complete")
                 return self._success(output, tool_id)
 
             except Exception as e:

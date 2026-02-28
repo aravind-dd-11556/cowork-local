@@ -184,6 +184,7 @@ class RestAPIInterface(BaseInterface):
         self._sessions = APISessionManager(agent_factory)
         self._ws = WebSocketConnectionManager()
         self._pending_questions: dict[str, dict] = {}
+        self._cancellation_tokens: dict[str, Any] = {}  # session_id -> StreamCancellationToken
 
         self.app = FastAPI(
             title="Cowork Agent API",
@@ -286,7 +287,11 @@ class RestAPIInterface(BaseInterface):
 
         @app.post("/api/chat/{session_id}/stream")
         async def send_message_stream(session_id: str, request: Request):
-            """Send a message and stream the response via SSE."""
+            """Send a message and stream the response via SSE.
+
+            When the agent has ``_events_enabled``, emits structured
+            ``StreamEvent`` objects.  Otherwise falls back to raw text chunks.
+            """
             body = await request.json()
             content = body.get("content", "")
             if not content:
@@ -297,10 +302,30 @@ class RestAPIInterface(BaseInterface):
 
             async def event_generator():
                 try:
-                    async for chunk in agent.run_stream(content):
-                        data = json.dumps({"type": "chunk", "text": chunk})
-                        yield f"data: {data}\n\n"
-                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    if getattr(agent, '_events_enabled', False):
+                        # Structured event stream
+                        from ..core.stream_events import event_to_dict
+                        from ..core.stream_cancellation import StreamCancellationToken
+
+                        token = self._cancellation_tokens.get(session_id)
+                        if token is None:
+                            token = StreamCancellationToken()
+                            self._cancellation_tokens[session_id] = token
+                        else:
+                            token.reset()
+
+                        async for event in agent.run_stream_events(
+                            content, cancellation_token=token,
+                        ):
+                            data = json.dumps(event_to_dict(event))
+                            yield f"data: {data}\n\n"
+                        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    else:
+                        # Raw text chunks (backward compat)
+                        async for chunk in agent.run_stream(content):
+                            data = json.dumps({"type": "TextChunk", "text": chunk})
+                            yield f"data: {data}\n\n"
+                        yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 except Exception as e:
                     yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
@@ -309,6 +334,15 @@ class RestAPIInterface(BaseInterface):
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
+
+        @app.post("/api/chat/{session_id}/cancel")
+        async def cancel_stream(session_id: str):
+            """Cancel an in-progress streaming response."""
+            token = self._cancellation_tokens.get(session_id)
+            if token is None:
+                return {"status": "no_active_stream", "session_id": session_id}
+            token.cancel(reason="Cancelled via API")
+            return {"status": "cancelled", "session_id": session_id}
 
         # ── Tools & Health ──────────────────────────────────────
 

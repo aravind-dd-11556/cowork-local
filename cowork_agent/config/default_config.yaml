@@ -87,6 +87,15 @@ plugins:
 multi_agent:
   enabled: false
 
+# Sprint 14: Streaming & Partial Output
+streaming:
+  events_enabled: true
+  tool_progress_enabled: true
+
+cancellation:
+  enabled: true
+  timeout_after_cancel: 5.0
+
 cli:
   history_file: "~/.cowork_agent_history"
   show_tool_execution: true

@@ -118,6 +118,65 @@ class ToolRegistry:
         )
         return results
 
+    async def execute_with_progress(self, call: ToolCall,
+                                     progress_callback=None) -> ToolResult:
+        """Execute a single tool call with an optional progress callback.
+
+        The *progress_callback* (if provided) is forwarded to the tool's
+        ``execute()`` method so the tool can report intermediate progress.
+        All other behaviour (metrics, sanitization, read-tracking) is
+        identical to ``execute_tool()``.
+        """
+        import time as _time
+        t0 = _time.time()
+        try:
+            tool = self.get_tool(call.name)
+            result = await tool.execute(
+                tool_id=call.tool_id,
+                progress_callback=progress_callback,
+                **call.input,
+            )
+            # Track file reads for Edit tool validation
+            if call.name == "read" and result.success:
+                self._read_files.add(call.input.get("file_path", ""))
+            # Sprint 8: Sanitize output
+            if self.output_sanitizer and result.output:
+                san = self.output_sanitizer.sanitize(result.output)
+                if san.had_secrets:
+                    result = ToolResult(
+                        tool_id=result.tool_id,
+                        success=result.success,
+                        output=san.sanitized,
+                        error=result.error,
+                    )
+            # Sprint 8: Record metrics
+            duration_ms = (_time.time() - t0) * 1000
+            if self.metrics_collector:
+                self.metrics_collector.record_tool_call(
+                    call.name, duration_ms, success=result.success,
+                    error=result.error if not result.success else None,
+                )
+            return result
+        except KeyError as e:
+            duration_ms = (_time.time() - t0) * 1000
+            if self.metrics_collector:
+                self.metrics_collector.record_tool_call(
+                    call.name, duration_ms, success=False, error=str(e),
+                )
+            return ToolResult(
+                tool_id=call.tool_id, success=False, output="", error=str(e),
+            )
+        except Exception as e:
+            duration_ms = (_time.time() - t0) * 1000
+            if self.metrics_collector:
+                self.metrics_collector.record_tool_call(
+                    call.name, duration_ms, success=False, error=str(e),
+                )
+            return ToolResult(
+                tool_id=call.tool_id, success=False, output="",
+                error=f"Tool execution error: {str(e)}",
+            )
+
     def has_been_read(self, file_path: str) -> bool:
         """Check if a file has been read in this session (for Edit validation)."""
         return file_path in self._read_files

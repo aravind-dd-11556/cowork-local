@@ -456,6 +456,21 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"Error recovery modules not available: {e}")
 
+    # ── Sprint 14: Streaming & Partial Output ───────────────────────────
+    try:
+        stream_cfg = config.get("streaming", {})
+        if stream_cfg.get("events_enabled", True):
+            agent._events_enabled = True
+            logger.info("Streaming events enabled")
+
+        cancel_cfg = config.get("cancellation", {})
+        if cancel_cfg.get("enabled", True):
+            from .core.stream_cancellation import StreamCancellationToken
+            agent._cancellation_token = StreamCancellationToken()
+            logger.info("Stream cancellation enabled")
+    except Exception as e:
+        logger.warning(f"Sprint 14 streaming/cancellation not available: {e}")
+
     # ── Sprint 18: Wire Git Operations, File Locks, Workspace Context ──
     try:
         if config.get("git.enabled", True):
