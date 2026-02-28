@@ -65,7 +65,40 @@ export COWORK_LLM_PROVIDER="anthropic"
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-### 4. Run the Agent
+### 4. Set Up Web Search (Before Launching the Agent)
+
+The agent includes web search and URL fetch tools powered by SearXNG (search engine) and Ollama (content processing). These are optional — the agent works fine without them — but if you want web search capabilities, complete these steps **before** launching the agent.
+
+```bash
+# 1. Install web tool dependencies
+pip install trafilatura markdownify beautifulsoup4 lxml
+
+# 2. Start SearXNG (search backend)
+cd cowork_agent/vendor/claude_web_tools
+docker-compose up -d   # or: podman-compose up -d
+cd ../../..
+
+# 3. Make sure Ollama is running (used for content processing)
+ollama serve
+
+# 4. Verify both services are reachable
+curl http://localhost:8888/search?q=test&format=json   # SearXNG
+curl http://localhost:11434/api/tags                     # Ollama
+```
+
+Environment variables for web tools:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SEARXNG_BASE_URL` | `http://localhost:8888` | SearXNG instance URL |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama instance URL |
+| `OLLAMA_MODEL` | `qwen3-vl:235b-instruct-cloud` | Model for content processing |
+| `FETCH_TIMEOUT` | `30` | HTTP fetch timeout (seconds) |
+| `CACHE_TTL_SECONDS` | `900` | URL cache duration (15 min) |
+
+If SearXNG or Ollama are not running when the agent starts, the `web_search` and `web_fetch` tools will simply be unavailable — other tools will work normally.
+
+### 5. Run the Agent
 
 ```bash
 # From the project root (parent of cowork_agent/)
@@ -80,7 +113,7 @@ python -m cowork_agent -c my_config.yaml  # custom config file
 
 On first run, the agent will ask you to pick a workspace directory — this is where it reads/writes files.
 
-### 5. Start Chatting
+### 6. Start Chatting
 
 ```
 ╭─ cowork-agent ─╮
@@ -185,7 +218,13 @@ cowork_agent/
 │   ├── test_p4_edge.py      # Sprint 4: Edge cases (43 tests)
 │   ├── test_p5.py           # Sprint 5: Multi-agent orchestration (83 tests)
 │   ├── test_qa_audit.py     # QA audit tests (42 tests)
-│   └── test_security_audit.py # Security audit tests (43 tests)
+│   ├── test_security_audit.py # Security audit tests (43 tests)
+│   ├── test_p6.py – test_p18.py  # Sprints 6–18 (various features)
+│   ├── test_p19.py          # Sprint 19: Persistent storage (137 tests)
+│   ├── test_p20.py          # Sprint 20: Observability dashboard (96 tests)
+│   ├── test_p21.py          # Sprint 21: Multi-agent orchestration enhancement (104 tests)
+│   ├── test_p22.py          # Sprint 22: End-to-end integration tests (192 tests)
+│   └── e2e_helpers.py       # E2E test helpers (MockLLMProvider, MockTool, etc.)
 ├── requirements.txt
 └── setup.py
 ```
@@ -195,48 +234,20 @@ cowork_agent/
 ```bash
 # From the project root (parent of cowork_agent/)
 
-# Run all unittest-based suites (377 tests)
-python -m unittest cowork_agent.tests.test_p2 cowork_agent.tests.test_p3 \
-  cowork_agent.tests.test_qa_audit cowork_agent.tests.test_security_audit \
-  cowork_agent.tests.test_p4 cowork_agent.tests.test_p4_edge cowork_agent.tests.test_p5
+# Run all tests with pytest (recommended, 2,261 tests)
+python -m pytest cowork_agent/tests/ --ignore=cowork_agent/tests/test_p1.py -q
 
-# Run Sprint 1 tests (custom runner, 66 tests)
+# Run Sprint 1 tests separately (custom runner, 66 tests)
 python cowork_agent/tests/test_p1.py
 
-# Run a specific suite
-python -m unittest cowork_agent.tests.test_p5 -v
+# Run a specific sprint
+python -m pytest cowork_agent/tests/test_p22.py -v
 
-# Total: 443 tests across 8 suites
+# Run a specific test class
+python -m pytest cowork_agent/tests/test_p22.py::TestE2EFullScenarios -v
+
+# Total: 2,261 tests across 22 sprints
 ```
-
-## Optional: Web Search & Fetch Setup
-
-The agent includes web search and URL fetch tools powered by SearXNG (search engine) and Ollama (content processing). These are optional — the agent works fine without them.
-
-To enable web tools:
-
-```bash
-# 1. Start SearXNG (search backend)
-cd cowork_agent/vendor/claude_web_tools
-docker-compose up -d   # or: podman-compose up -d
-
-# 2. Make sure Ollama is running (used for content processing)
-ollama serve
-
-# 3. Verify
-curl http://localhost:8888/search?q=test&format=json   # SearXNG
-curl http://localhost:11434/api/tags                     # Ollama
-```
-
-Environment variables for web tools:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SEARXNG_BASE_URL` | `http://localhost:8888` | SearXNG instance URL |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama instance URL |
-| `OLLAMA_MODEL` | `qwen3-vl:235b-instruct-cloud` | Model for content processing |
-| `FETCH_TIMEOUT` | `30` | HTTP fetch timeout (seconds) |
-| `CACHE_TTL_SECONDS` | `900` | URL cache duration (15 min) |
 
 ## Configuration Reference
 
