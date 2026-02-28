@@ -603,6 +603,92 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"Sprint 16 observability not available: {e}")
 
+    # ── Sprint 17: Security & Sandboxing ──────────────────────────────
+    try:
+        security_cfg = config.get("security", {})
+        if security_cfg.get("enabled", True):
+            # Input Sanitizer
+            if security_cfg.get("input_sanitizer", {}).get("enabled", True):
+                from .core.input_sanitizer import InputSanitizer
+                san_cfg = security_cfg.get("input_sanitizer", {})
+                agent.input_sanitizer = InputSanitizer(
+                    max_input_size=san_cfg.get("max_input_size", 1_000_000),
+                    sql_injection=san_cfg.get("sql_injection", True),
+                    command_injection=san_cfg.get("command_injection", True),
+                    template_injection=san_cfg.get("template_injection", True),
+                    xpath_injection=san_cfg.get("xpath_injection", True),
+                )
+                logger.info("Input sanitizer initialized")
+
+            # Prompt Injection Detector
+            if security_cfg.get("prompt_injection_detector", {}).get("enabled", True):
+                from .core.prompt_injection_detector import PromptInjectionDetector
+                pid_cfg = security_cfg.get("prompt_injection_detector", {})
+                agent.prompt_injection_detector = PromptInjectionDetector(
+                    risk_threshold=pid_cfg.get("risk_threshold", 0.4),
+                    enabled_categories=pid_cfg.get("enabled_categories"),
+                    max_scan_length=pid_cfg.get("max_scan_length", 500_000),
+                )
+                logger.info("Prompt injection detector initialized")
+
+            # Credential Detector
+            if security_cfg.get("credential_detector", {}).get("enabled", True):
+                from .core.credential_detector import CredentialDetector, RedactionStrategy
+                cred_cfg = security_cfg.get("credential_detector", {})
+                strategy_name = cred_cfg.get("strategy", "mask")
+                strategy = RedactionStrategy(strategy_name)
+                agent.credential_detector = CredentialDetector(
+                    strategy=strategy,
+                    max_scan_length=cred_cfg.get("max_scan_length", 1_000_000),
+                )
+                logger.info("Credential detector initialized")
+
+            # Sandboxed Executor
+            if security_cfg.get("sandboxed_executor", {}).get("enabled", True):
+                from .core.sandboxed_executor import SandboxedExecutor, ResourceLimits
+                se_cfg = security_cfg.get("sandboxed_executor", {})
+                default_limits = ResourceLimits(
+                    max_execution_time_seconds=se_cfg.get("default_timeout_seconds", 30.0),
+                    max_memory_mb=se_cfg.get("default_max_memory_mb", 512),
+                    max_output_size_bytes=se_cfg.get("default_max_output_bytes", 10_000_000),
+                )
+                agent.sandboxed_executor = SandboxedExecutor(default_limits=default_limits)
+                logger.info("Sandboxed executor initialized")
+
+            # Rate Limiter
+            if security_cfg.get("rate_limiter", {}).get("enabled", True):
+                from .core.rate_limiter import RateLimiter, RateLimitConfig
+                rl_cfg = security_cfg.get("rate_limiter", {})
+                default_rl_config = RateLimitConfig(
+                    max_requests=rl_cfg.get("default_max_requests", 60),
+                    window_seconds=rl_cfg.get("default_window_seconds", 60),
+                    burst_limit=rl_cfg.get("default_burst_limit", 10),
+                )
+                rate_limiter = RateLimiter(default_config=default_rl_config)
+                # Configure per-tool limits
+                tool_limits = rl_cfg.get("tool_limits", {})
+                for tool_name, tool_cfg in tool_limits.items():
+                    rate_limiter.configure(tool_name, RateLimitConfig(
+                        max_requests=tool_cfg.get("max_requests", 60),
+                        window_seconds=tool_cfg.get("window_seconds", 60),
+                        burst_limit=tool_cfg.get("burst_limit", 10),
+                    ))
+                agent.rate_limiter = rate_limiter
+                logger.info("Rate limiter initialized")
+
+            # Security Audit Log
+            if security_cfg.get("audit_log", {}).get("enabled", True):
+                from .core.security_audit_log import SecurityAuditLog
+                al_cfg = security_cfg.get("audit_log", {})
+                agent.security_audit_log = SecurityAuditLog(
+                    max_events=al_cfg.get("max_events", 10000),
+                )
+                logger.info("Security audit log initialized")
+
+            logger.info("Sprint 17: Security & sandboxing initialized")
+    except Exception as e:
+        logger.warning(f"Sprint 17 security not available: {e}")
+
     # ── Sprint 18: Wire Git Operations, File Locks, Workspace Context ──
     try:
         if config.get("git.enabled", True):

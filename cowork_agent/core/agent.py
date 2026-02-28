@@ -95,6 +95,14 @@ class Agent:
         self.benchmark = None              # PerformanceBenchmark instance
         self.health_orchestrator = None    # IntegratedHealthOrchestrator instance
 
+        # Sprint 17: Security & Sandboxing (set by main.py)
+        self.input_sanitizer = None        # InputSanitizer instance
+        self.prompt_injection_detector = None  # PromptInjectionDetector instance
+        self.credential_detector = None    # CredentialDetector instance
+        self.sandboxed_executor = None     # SandboxedExecutor instance
+        self.rate_limiter = None           # RateLimiter instance
+        self.security_audit_log = None     # SecurityAuditLog instance
+
         # Callbacks for UI updates
         self.on_tool_start = on_tool_start
         self.on_tool_end = on_tool_end

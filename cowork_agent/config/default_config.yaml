@@ -145,6 +145,52 @@ observability:
     enabled: false
     report_format: "json"
 
+# Sprint 17: Security & Sandboxing
+security:
+  enabled: true
+  input_sanitizer:
+    enabled: true
+    sql_injection: true
+    command_injection: true
+    template_injection: true
+    xpath_injection: true
+    max_input_size: 1000000
+  prompt_injection_detector:
+    enabled: true
+    risk_threshold: 0.4
+    max_scan_length: 500000
+    enabled_categories:
+      - role_confusion
+      - safety_bypass
+      - exfiltration
+      - context_manipulation
+      - obfuscation
+  credential_detector:
+    enabled: true
+    strategy: "mask"
+    max_scan_length: 1000000
+    scan_tool_outputs: true
+  sandboxed_executor:
+    enabled: true
+    default_timeout_seconds: 30.0
+    default_max_memory_mb: 512
+    default_max_output_bytes: 10000000
+  rate_limiter:
+    enabled: true
+    default_max_requests: 60
+    default_window_seconds: 60
+    default_burst_limit: 10
+    tool_limits:
+      bash:
+        max_requests: 30
+        burst_limit: 5
+      web_fetch:
+        max_requests: 20
+        burst_limit: 3
+  audit_log:
+    enabled: true
+    max_events: 10000
+
 cli:
   history_file: "~/.cowork_agent_history"
   show_tool_execution: true
