@@ -109,6 +109,11 @@ class Agent:
         # Sprint 20: Dashboard (set by main.py)
         self.dashboard_provider = None     # DashboardDataProvider instance
 
+        # Sprint 21: Multi-Agent Enhancement (set by main.py)
+        self.specialization_registry = None  # SpecializationRegistry instance
+        self.conversation_router = None      # ConversationRouter instance
+        self.agent_pool = None               # AgentPool instance
+
         # Callbacks for UI updates
         self.on_tool_start = on_tool_start
         self.on_tool_end = on_tool_end

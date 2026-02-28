@@ -86,6 +86,25 @@ plugins:
 
 multi_agent:
   enabled: false
+  strategies:
+    map_reduce:
+      max_parallel: 5
+    debate:
+      max_rounds: 3
+    voting:
+      consensus_threshold: 0.5
+      allow_self_vote: false
+  pools:
+    enabled: false
+    default_min: 1
+    default_max: 10
+    default_initial: 2
+    idle_timeout: 300
+  routing:
+    enabled: true
+    default_strategy: "sequential"
+  specialization:
+    enabled: true
 
 # Sprint 14: Streaming & Partial Output
 streaming:

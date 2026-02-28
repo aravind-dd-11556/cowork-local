@@ -28,6 +28,10 @@ class ExecutionStrategy(Enum):
     SEQUENTIAL = "sequential"
     PARALLEL = "parallel"
     PIPELINE = "pipeline"
+    # Sprint 21: Advanced strategies
+    MAP_REDUCE = "map_reduce"
+    DEBATE = "debate"
+    VOTING = "voting"
 
 
 @dataclass
