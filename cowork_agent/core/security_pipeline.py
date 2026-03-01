@@ -125,6 +125,7 @@ class SecurityPipeline:
         privacy_guard=None,
         security_audit_log=None,
         permission_manager=None,
+        invariant_registry=None,
     ):
         self.input_sanitizer = input_sanitizer
         self.prompt_injection_detector = prompt_injection_detector
@@ -134,6 +135,7 @@ class SecurityPipeline:
         self.privacy_guard = privacy_guard
         self.security_audit_log = security_audit_log
         self.permission_manager = permission_manager
+        self.invariant_registry = invariant_registry  # Sprint 25: immutable checks
 
         # Counters
         self._input_validations = 0
@@ -207,6 +209,28 @@ class SecurityPipeline:
         """
         self._tool_call_validations += 1
         result = PipelineResult(success=True)
+
+        # 0. Immutable invariant checks (Sprint 25 — cannot be bypassed)
+        if self.invariant_registry:
+            try:
+                inv_result = self.invariant_registry.check_tool_call(tool_name, tool_input)
+                if not inv_result.passed:
+                    result.success = False
+                    result.add_check(CheckResult(
+                        check_type=PipelineCheckType.ACTION_CLASSIFICATION,
+                        passed=False,
+                        severity="critical",
+                        message=f"IMMUTABLE INVARIANT VIOLATION: {inv_result.summary}",
+                        metadata=inv_result.to_dict(),
+                    ))
+                    self._log_event(
+                        "policy_violation", "CRITICAL",
+                        f"Immutable invariant violated: {inv_result.summary}",
+                        tool_name=tool_name, blocked=True,
+                    )
+                    return result  # Immediate block, no further checks
+            except Exception as e:
+                logger.debug(f"Invariant check error: {e}")
 
         # 1. Action classification
         if self.action_classifier:
@@ -313,6 +337,26 @@ class SecurityPipeline:
 
         if not output:
             return result
+
+        # 0. Immutable output invariant checks (Sprint 25)
+        if self.invariant_registry:
+            try:
+                inv_result = self.invariant_registry.check_tool_output(output, tool_name)
+                if not inv_result.passed:
+                    result.add_check(CheckResult(
+                        check_type=PipelineCheckType.CREDENTIAL_DETECTION,
+                        passed=False,
+                        severity="critical",
+                        message=f"IMMUTABLE INVARIANT VIOLATION: {inv_result.summary}",
+                        metadata=inv_result.to_dict(),
+                    ))
+                    self._log_event(
+                        "credential_detected", "CRITICAL",
+                        f"Output invariant violated: {inv_result.summary}",
+                        tool_name=tool_name, blocked=True,
+                    )
+            except Exception as e:
+                logger.debug(f"Output invariant check error: {e}")
 
         # 1. Credential detection (redact credentials in output)
         if self.credential_detector:

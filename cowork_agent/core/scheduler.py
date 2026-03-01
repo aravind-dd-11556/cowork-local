@@ -69,11 +69,13 @@ class TaskScheduler:
         await scheduler.start(agent_runner=run_func)
     """
 
-    def __init__(self, workspace_dir: str = ""):
+    def __init__(self, workspace_dir: str = "", max_history: int = 50):
         self.workspace_dir = workspace_dir
         self._tasks: dict[str, ScheduledTask] = {}
         self._running = False
         self._storage_dir = ""
+        self._max_history = max_history
+        self._run_history: list[dict] = []  # Sprint 25: execution history
 
         if workspace_dir:
             self._storage_dir = os.path.join(workspace_dir, ".cowork", "scheduled")
@@ -160,9 +162,64 @@ class TaskScheduler:
 
         return f"Task '{task_id}' deleted."
 
+    def get_task(self, task_id: str) -> Optional[ScheduledTask]:
+        """Get a single task by ID."""
+        return self._tasks.get(task_id)
+
     def list_tasks(self) -> list[dict]:
         """Return all tasks as dicts."""
         return [t.to_dict() for t in self._tasks.values()]
+
+    @property
+    def run_history(self) -> list[dict]:
+        """Execution history (most recent last)."""
+        return list(self._run_history)
+
+    def _record_execution(
+        self, task_id: str, success: bool, error: str = "", duration: float = 0.0
+    ) -> None:
+        """Record a task execution in history."""
+        self._run_history.append({
+            "task_id": task_id,
+            "started_at": datetime.now().isoformat(),
+            "success": success,
+            "error": error,
+            "duration_seconds": round(duration, 2),
+        })
+        # Cap history size
+        if len(self._run_history) > self._max_history:
+            self._run_history = self._run_history[-self._max_history:]
+
+    async def run_now(
+        self, task_id: str, agent_runner: Callable[[str], asyncio.Future]
+    ) -> str:
+        """Immediately run a task regardless of schedule.
+
+        Args:
+            task_id: The task to run
+            agent_runner: Async function that takes a prompt and runs the agent
+
+        Returns:
+            Result message
+        """
+        task = self._tasks.get(task_id)
+        if not task:
+            return f"Task '{task_id}' not found."
+
+        logger.info(f"Running task now: {task_id}")
+        start_time = datetime.now()
+
+        try:
+            await agent_runner(task.prompt)
+            duration = (datetime.now() - start_time).total_seconds()
+            task.last_run_at = datetime.now().isoformat()
+            self.save_task(task)
+            self._record_execution(task_id, success=True, duration=duration)
+            return f"Task '{task_id}' executed successfully ({duration:.1f}s)"
+        except Exception as e:
+            duration = (datetime.now() - start_time).total_seconds()
+            self._record_execution(task_id, success=False, error=str(e), duration=duration)
+            return f"Task '{task_id}' failed: {e}"
 
     async def start(self, agent_runner: Callable[[str], asyncio.Future]) -> None:
         """
@@ -186,9 +243,14 @@ class TaskScheduler:
                         next_run = datetime.fromisoformat(task.next_run_at)
                         if now >= next_run:
                             logger.info(f"Running scheduled task: {task.task_id}")
+                            start_time = datetime.now()
                             try:
                                 await agent_runner(task.prompt)
+                                duration = (datetime.now() - start_time).total_seconds()
+                                self._record_execution(task.task_id, success=True, duration=duration)
                             except Exception as e:
+                                duration = (datetime.now() - start_time).total_seconds()
+                                self._record_execution(task.task_id, success=False, error=str(e), duration=duration)
                                 logger.error(f"Scheduled task '{task.task_id}' failed: {e}")
 
                             task.last_run_at = now.isoformat()

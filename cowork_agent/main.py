@@ -762,6 +762,39 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"Sprint 24 production hardening not available: {e}")
 
+    # ── Sprint 25: Immutable Security Hardening ───────────────────────
+    try:
+        s25_cfg = config.get("security_hardening", {})
+        if s25_cfg.get("enabled", True):
+            from .core.security_invariants import SecurityInvariantRegistry
+            from .core.security_freeze import SecurityFreeze
+
+            # Immutable invariant registry
+            invariant_registry = SecurityInvariantRegistry(
+                load_defaults=s25_cfg.get("load_default_invariants", True),
+            )
+            # Wire into security pipeline
+            if hasattr(agent, 'security_pipeline') and agent.security_pipeline:
+                agent.security_pipeline.invariant_registry = invariant_registry
+            agent.invariant_registry = invariant_registry
+
+            # Security freeze — locks critical config keys
+            security_freeze = SecurityFreeze()
+            # Add any custom frozen keys from config
+            extra_frozen = s25_cfg.get("extra_frozen_keys", [])
+            for key in extra_frozen:
+                security_freeze.add_frozen_key(key)
+            security_freeze.freeze()
+            agent.security_freeze = security_freeze
+
+            logger.info(
+                f"Sprint 25: Immutable security hardening initialized "
+                f"({invariant_registry.count} invariants, "
+                f"{len(security_freeze.get_frozen_keys())} frozen keys)"
+            )
+    except Exception as e:
+        logger.warning(f"Sprint 25 security hardening not available: {e}")
+
     # ── Sprint 19: Persistent Storage ─────────────────────────────────
     try:
         ps_cfg = config.get("persistent_storage", {})
@@ -908,7 +941,20 @@ def main() -> None:
             registry.register(CreateScheduledTaskTool(scheduler=task_scheduler))
             registry.register(ListScheduledTasksTool(scheduler=task_scheduler))
             registry.register(UpdateScheduledTaskTool(scheduler=task_scheduler))
-            logger.info("Task scheduler initialized")
+
+            # Sprint 25: Extended scheduler tools (delete + run-now)
+            from .tools.scheduler_tools_ext import (
+                DeleteScheduledTaskTool, RunScheduledTaskTool,
+            )
+            registry.register(DeleteScheduledTaskTool(scheduler=task_scheduler))
+            run_tool = RunScheduledTaskTool(scheduler=task_scheduler)
+            registry.register(run_tool)
+
+            # Store scheduler on agent for background loop access
+            agent.task_scheduler = task_scheduler
+            agent._scheduler_run_tool = run_tool  # for late-binding agent_runner
+
+            logger.info("Task scheduler initialized (with delete + run-now tools)")
     except Exception as e:
         logger.warning(f"Task scheduler not available: {e}")
 
