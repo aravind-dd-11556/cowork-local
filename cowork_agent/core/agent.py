@@ -111,6 +111,11 @@ class Agent:
         self.consent_manager = None        # ConsentManager instance
         self.privacy_guard = None          # PrivacyGuard instance
 
+        # Sprint 24: Production Hardening (set by main.py)
+        self.tool_output_validator = None  # ToolOutputValidator instance
+        self.cost_optimizer = None         # CostOptimizer instance
+        self.approval_workflow = None      # ApprovalWorkflow instance
+
         # Sprint 20: Dashboard (set by main.py)
         self.dashboard_provider = None     # DashboardDataProvider instance
 
@@ -326,11 +331,18 @@ class Agent:
 
             # Sprint 9: Record cost and provider health
             if self.cost_tracker and response.usage:
-                self.cost_tracker.record(
+                cost_record = self.cost_tracker.record(
                     response.usage,
                     self.provider.provider_name,
                     self.provider.model,
                 )
+                # Sprint 24: Feed actual usage to cost optimizer
+                if self.cost_optimizer and response.usage:
+                    self.cost_optimizer.record_usage(
+                        input_tokens=response.usage.get("input_tokens", 0),
+                        output_tokens=response.usage.get("output_tokens", 0),
+                        cost=getattr(cost_record, 'estimated_cost', 0.0),
+                    )
             if self.health_tracker:
                 self.health_tracker.record_call(
                     self.provider.provider_name,
@@ -656,6 +668,33 @@ class Agent:
                     results[i] = blocked_result
                     continue
 
+                # Sprint 24: Approval workflow for EXPLICIT_CONSENT tier
+                if (pipeline_result.requires_user_confirmation and
+                        self.approval_workflow):
+                    try:
+                        desc = getattr(pipeline_result, 'confirmation_message', '') or f"Confirm: {call.name}"
+                        decision = self.approval_workflow.request_approval(
+                            tool_name=call.name,
+                            tool_input=call.input,
+                            description=desc,
+                        )
+                        if not decision.approved:
+                            logger.info(f"[CONSENT] User declined {call.name}: {decision.reason}")
+                            if self.on_tool_start:
+                                self.on_tool_start(call)
+                            declined_result = ToolResult(
+                                tool_id=call.tool_id,
+                                success=False,
+                                output="",
+                                error=f"[CONSENT] Action declined: {decision.reason}",
+                            )
+                            if self.on_tool_end:
+                                self.on_tool_end(call, declined_result)
+                            results[i] = declined_result
+                            continue
+                    except Exception as e:
+                        logger.warning(f"Approval workflow error: {e}")
+
             # ── Plan mode check — restrict to read-only tools ──
             if self.plan_manager and self.plan_manager.is_plan_mode:
                 allowed, reason = self.plan_manager.is_tool_allowed(call.name)
@@ -741,6 +780,26 @@ class Agent:
                     for check in output_validation.checks:
                         if not check.passed:
                             logger.info(f"[SECURITY] Output check for {call.name}: {check.message}")
+
+                # Sprint 24: Tool output validation
+                if self.tool_output_validator and result.output:
+                    try:
+                        val_result = self.tool_output_validator.validate(
+                            call.name, result.output, call.input,
+                        )
+                        if val_result.should_block:
+                            logger.warning(f"[VALIDATION] Output blocked for {call.name}: {val_result.summary}")
+                            result = ToolResult(
+                                tool_id=result.tool_id,
+                                success=False,
+                                output="",
+                                error=f"[VALIDATION] {val_result.summary}",
+                                metadata=result.metadata,
+                            )
+                        elif not val_result.passed:
+                            logger.info(f"[VALIDATION] Output warning for {call.name}: {val_result.summary}")
+                    except Exception as e:
+                        logger.warning(f"Tool output validation error: {e}")
 
                 # Sprint 23: Add trust context to tool result
                 try:

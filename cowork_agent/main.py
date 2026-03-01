@@ -726,6 +726,42 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"Sprint 23 security pipeline not available: {e}")
 
+    # ── Sprint 24: Production Hardening ────────────────────────────────
+    try:
+        s24_cfg = config.get("production_hardening", {})
+        if s24_cfg.get("enabled", True):
+            from .core.tool_output_validator import ToolOutputValidator
+            from .core.cost_optimizer import CostOptimizer
+            from .core.approval_workflow import ApprovalWorkflow
+
+            # Tool Output Validator
+            tool_output_validator = ToolOutputValidator(
+                load_defaults=s24_cfg.get("load_default_assertions", True),
+                max_retries=s24_cfg.get("max_retries", 2),
+            )
+            agent.tool_output_validator = tool_output_validator
+
+            # Cost Optimizer
+            cost_cfg = s24_cfg.get("cost_optimizer", {})
+            cost_optimizer = CostOptimizer(
+                current_provider=agent.provider.provider_name,
+                current_model=agent.provider.model,
+                budget_limit=cost_cfg.get("budget_limit"),
+                auto_downgrade_threshold=cost_cfg.get("auto_downgrade_threshold", 0.8),
+                enabled=cost_cfg.get("enabled", True),
+            )
+            agent.cost_optimizer = cost_optimizer
+
+            # Approval Workflow
+            approval_workflow = ApprovalWorkflow(
+                auto_approve_all=s24_cfg.get("auto_approve_all", False),
+            )
+            agent.approval_workflow = approval_workflow
+
+            logger.info("Sprint 24: Production hardening initialized (validator + cost optimizer + approval workflow)")
+    except Exception as e:
+        logger.warning(f"Sprint 24 production hardening not available: {e}")
+
     # ── Sprint 19: Persistent Storage ─────────────────────────────────
     try:
         ps_cfg = config.get("persistent_storage", {})
