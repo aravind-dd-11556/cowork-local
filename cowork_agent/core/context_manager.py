@@ -10,6 +10,10 @@ summarized (via ConversationSummarizer) instead of silently lost.
 
 Sprint 15: Model-aware token estimation, knowledge relevance scoring,
 message deduplication, and proactive pruning at 60% capacity.
+
+Sprint 27: ContextPriorityScorer with 8 scoring signals for smarter
+context assembly based on tool usage, knowledge alignment, conversation
+flow, error context, and user intent.
 """
 
 from __future__ import annotations
@@ -25,7 +29,8 @@ from .models import Message
 if TYPE_CHECKING:
     from .conversation_summarizer import ConversationSummarizer
     from .token_estimator import ModelTokenEstimator
-    from .knowledge_store import KnowledgeEntry
+    from .knowledge_store import KnowledgeEntry, KnowledgeStore
+    from .metrics_collector import MetricsCollector
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +81,8 @@ class ContextManager:
         summarizer: Optional[ConversationSummarizer] = None,
         token_estimator: Optional[ModelTokenEstimator] = None,
         model: str = "",
+        metrics_collector: Optional[MetricsCollector] = None,
+        knowledge_store: Optional[KnowledgeStore] = None,
     ):
         """
         Args:
@@ -85,6 +92,10 @@ class ContextManager:
             token_estimator: Optional ModelTokenEstimator for model-aware
                              token estimation (Sprint 15).
             model: Model name for token estimation ratio selection.
+            metrics_collector: Optional MetricsCollector for tool-aware
+                               scoring (Sprint 27).
+            knowledge_store: Optional KnowledgeStore for knowledge-aligned
+                             scoring (Sprint 27).
         """
         self.max_context_tokens = max_context_tokens
         self._effective_limit = int(
@@ -95,6 +106,14 @@ class ContextManager:
         # Sprint 15: Model-aware token estimation
         self.token_estimator: Optional[ModelTokenEstimator] = token_estimator
         self.model = model
+
+        # Sprint 27: Smart context priority scoring
+        self._priority_scorer: Optional[ContextPriorityScorer] = None
+        if metrics_collector or knowledge_store:
+            self._priority_scorer = ContextPriorityScorer(
+                metrics_collector=metrics_collector,
+                knowledge_store=knowledge_store,
+            )
 
     # ── Token estimation ─────────────────────────────────────
 
@@ -339,13 +358,23 @@ class ContextManager:
 
         Higher scores = more important = kept longer.
 
-        Factors:
+        Sprint 27: Delegates to ContextPriorityScorer (8 signals) if available,
+        otherwise uses the original 5-signal scoring.
+
+        Factors (original):
           - Recency (30%): exponential decay from newest to oldest
           - Role weight (25%): user > assistant > tool_result
           - Content value (20%): decisions/errors rate higher
           - Tool result value (15%): failed tools rate higher
           - Length penalty (-10%): very long messages penalized
         """
+        # Sprint 27: Use priority scorer if available
+        if self._priority_scorer:
+            return self._priority_scorer.score_message(
+                msg, position, total
+            )
+
+        # Original scoring (fallback)
         score = (
             self.W_RECENCY * self._recency_score(position, total)
             + self.W_ROLE * self._role_weight(msg.role)
@@ -555,3 +584,262 @@ class ContextManager:
             )
 
         return result
+
+
+# ── Sprint 27: Context Priority Scorer ───────────────────────────
+
+class ContextPriorityScorer:
+    """
+    Advanced 8-signal message importance scorer for smart context assembly.
+
+    Replaces the basic 5-weight scoring in ContextManager with a more
+    nuanced system that considers tool usage patterns, knowledge alignment,
+    conversation flow, error context, and user intent.
+
+    Scoring signals and weights:
+      1. Recency (0.20)      — exponential decay favoring recent messages
+      2. Role (0.15)         — user > assistant > tool_result
+      3. Content value (0.15) — decisions, questions, summaries score higher
+      4. Tool success (0.15)  — messages about actively-used tools preserved
+      5. Knowledge (0.10)     — messages related to stored knowledge
+      6. Flow (0.10)          — unbroken chains of thought
+      7. Error context (0.10) — error messages and recovery preserved
+      8. User intent (0.05)   — messages with questions/requests
+    """
+
+    # Weights for 8 scoring signals
+    W_RECENCY = 0.20
+    W_ROLE = 0.15
+    W_CONTENT = 0.15
+    W_TOOL_SUCCESS = 0.15
+    W_KNOWLEDGE = 0.10
+    W_FLOW = 0.10
+    W_ERROR_CONTEXT = 0.10
+    W_USER_INTENT = 0.05
+
+    # Decision indicator phrases
+    DECISION_PHRASES = [
+        "decided", "agreed", "confirmed", "chose", "resolved",
+        "will use", "going with", "settled on", "picked",
+        "the plan is", "approach is", "strategy is",
+    ]
+
+    # Error indicator words
+    ERROR_WORDS = [
+        "error", "exception", "traceback", "failed", "bug",
+        "crash", "fault", "broken", "fix", "debug", "issue",
+    ]
+
+    # Recovery indicator words
+    RECOVERY_WORDS = [
+        "fixed", "resolved", "workaround", "fallback", "retry",
+        "recovered", "solved", "patched",
+    ]
+
+    def __init__(
+        self,
+        metrics_collector: Optional[MetricsCollector] = None,
+        knowledge_store: Optional[KnowledgeStore] = None,
+    ):
+        self._metrics = metrics_collector
+        self._knowledge = knowledge_store
+        self._recent_tools: list[str] = []
+
+    # ── Properties ───────────────────────────────────────────
+
+    @property
+    def recent_tools(self) -> list[str]:
+        return list(self._recent_tools)
+
+    def set_recent_tools(self, tools: list[str]) -> None:
+        """Update the list of recently used tools for scoring context."""
+        self._recent_tools = list(tools)
+
+    # ── Main scoring ─────────────────────────────────────────
+
+    def score_message(
+        self,
+        msg: Message,
+        position: int,
+        total: int,
+        recent_query: str = "",
+    ) -> float:
+        """
+        Score a message 0.0–1.0 using 8 signals.
+
+        Args:
+            msg: The message to score.
+            position: Index of the message (0 = oldest).
+            total: Total number of messages.
+            recent_query: Most recent user query for relevance matching.
+
+        Returns:
+            Float 0.0–1.0 where higher = more important.
+        """
+        score = (
+            self.W_RECENCY * self._recency_score(position, total)
+            + self.W_ROLE * self._role_score(msg.role)
+            + self.W_CONTENT * self._content_value_score(msg)
+            + self.W_TOOL_SUCCESS * self._tool_success_score(msg)
+            + self.W_KNOWLEDGE * self._knowledge_alignment_score(msg)
+            + self.W_FLOW * self._conversation_flow_score(msg, position, total)
+            + self.W_ERROR_CONTEXT * self._error_context_score(msg)
+            + self.W_USER_INTENT * self._user_intent_score(msg)
+        )
+        return max(0.0, min(1.0, score))
+
+    # ── Individual scoring signals ───────────────────────────
+
+    @staticmethod
+    def _recency_score(position: int, total: int) -> float:
+        """Signal 1: Exponential decay favoring recent messages."""
+        if total <= 1:
+            return 1.0
+        normalized = position / (total - 1)
+        return math.pow(normalized, 1.5)
+
+    @staticmethod
+    def _role_score(role: str) -> float:
+        """Signal 2: User messages most important."""
+        weights = {
+            "user": 1.0,
+            "assistant": 0.8,
+            "tool_result": 0.5,
+        }
+        return weights.get(role, 0.5)
+
+    def _content_value_score(self, msg: Message) -> float:
+        """Signal 3: Decisions, summaries, and substantive content score higher."""
+        if not msg.content:
+            return 0.0
+
+        lower = msg.content.lower()
+        score = 0.0
+
+        # Decisions are highly valuable
+        if any(phrase in lower for phrase in self.DECISION_PHRASES):
+            score += 0.4
+
+        # Summaries contain condensed information
+        if "summary" in lower or "overview" in lower:
+            score += 0.3
+
+        # Code snippets are often valuable
+        if "```" in msg.content or "def " in msg.content:
+            score += 0.2
+
+        # Very short messages are less valuable
+        if len(msg.content) < 20:
+            score -= 0.2
+
+        return max(0.0, min(1.0, score))
+
+    def _tool_success_score(self, msg: Message) -> float:
+        """Signal 4: Messages about actively-used tools are preserved."""
+        if not msg.tool_results and not msg.tool_calls:
+            return 0.3  # Neutral for non-tool messages
+
+        score = 0.0
+
+        # Check if message involves recently-used tools
+        tool_names = set()
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                tool_names.add(tc.name)
+        if msg.tool_results:
+            for tr in msg.tool_results:
+                if hasattr(tr, "tool_name"):
+                    tool_names.add(tr.tool_name)
+
+        # Boost messages involving recently-used tools
+        if self._recent_tools and tool_names:
+            overlap = tool_names & set(self._recent_tools)
+            if overlap:
+                score += 0.5
+
+        # Failed tool results are more informative
+        if msg.tool_results:
+            has_failure = any(not tr.success for tr in msg.tool_results)
+            if has_failure:
+                score += 0.4
+            else:
+                score += 0.2
+
+        return max(0.0, min(1.0, score))
+
+    def _knowledge_alignment_score(self, msg: Message) -> float:
+        """Signal 5: Messages related to stored knowledge score higher."""
+        if not self._knowledge or not msg.content:
+            return 0.3  # Neutral when no knowledge store
+
+        # Quick keyword search against knowledge store
+        try:
+            results = self._knowledge.search(msg.content[:100], limit=3)
+            if results:
+                return min(1.0, 0.3 + 0.2 * len(results))
+        except Exception:
+            pass
+
+        return 0.2
+
+    @staticmethod
+    def _conversation_flow_score(msg: Message, position: int, total: int) -> float:
+        """Signal 6: Preserve unbroken chains of thought."""
+        # Messages in the middle of a sequence get a bonus
+        # (they're part of a chain, removing them breaks flow)
+        if total <= 2:
+            return 0.5
+
+        # Newer messages in a chain are more important
+        relative_pos = position / (total - 1) if total > 1 else 0.5
+
+        # Slight boost for messages that are part of a continuous run
+        if 0.3 < relative_pos < 0.8:
+            return 0.6  # Mid-conversation messages get slight boost
+
+        return 0.4
+
+    def _error_context_score(self, msg: Message) -> float:
+        """Signal 7: Error messages and recovery attempts preserved aggressively."""
+        if not msg.content:
+            return 0.0
+
+        lower = msg.content.lower()
+        score = 0.0
+
+        # Error messages
+        if any(word in lower for word in self.ERROR_WORDS):
+            score += 0.6
+
+        # Recovery/fix messages (keep to remember what worked)
+        if any(word in lower for word in self.RECOVERY_WORDS):
+            score += 0.5
+
+        # Tool failures
+        if msg.tool_results:
+            has_failure = any(not tr.success for tr in msg.tool_results)
+            if has_failure:
+                score += 0.4
+
+        return max(0.0, min(1.0, score))
+
+    @staticmethod
+    def _user_intent_score(msg: Message) -> float:
+        """Signal 8: Messages with questions or requests preserved."""
+        if msg.role != "user" or not msg.content:
+            return 0.0
+
+        # Questions
+        if "?" in msg.content:
+            return 0.8
+
+        # Imperative requests (common openers)
+        lower = msg.content.lower().strip()
+        request_starters = [
+            "please", "can you", "could you", "help me", "show me",
+            "create", "fix", "update", "add", "remove", "explain",
+        ]
+        if any(lower.startswith(s) for s in request_starters):
+            return 0.7
+
+        return 0.3

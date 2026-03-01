@@ -44,7 +44,7 @@ class KnowledgeEntry:
         )
 
 
-VALID_CATEGORIES = {"facts", "preferences", "decisions"}
+VALID_CATEGORIES = {"facts", "preferences", "decisions", "reflections"}
 
 
 class KnowledgeStore:

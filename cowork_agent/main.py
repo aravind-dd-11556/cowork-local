@@ -1101,6 +1101,72 @@ def main() -> None:
     except Exception as e:
         logger.debug(f"Test coverage collector not available: {e}")
 
+    # ── Sprint 27: Tier 2 Differentiating Features ───────────────────
+
+    # Feature 1: Self-Healing Agent (Rollback Journal)
+    try:
+        sh_cfg = config.get("self_healing", {})
+        if sh_cfg.get("enabled", True):
+            from .core.rollback_journal import RollbackJournal
+            rollback_journal = RollbackJournal(
+                snapshot_manager=snapshot_manager,
+                git_ops=getattr(agent, '_git_ops', None),
+                workspace_dir=workspace,
+                max_checkpoints=sh_cfg.get("max_checkpoints", 30),
+            )
+            agent.rollback_journal = rollback_journal
+            logger.info("Rollback journal initialized (self-healing enabled)")
+    except Exception as e:
+        logger.debug(f"Rollback journal not available: {e}")
+
+    # Feature 2: Reflection Engine
+    try:
+        from .core.reflection_engine import ReflectionEngine
+        reflection_engine = ReflectionEngine(
+            knowledge_store=knowledge_store,
+            max_stored_reflections=100,
+        )
+        agent.reflection_engine = reflection_engine
+        logger.info("Reflection engine initialized")
+    except Exception as e:
+        logger.debug(f"Reflection engine not available: {e}")
+
+    # Feature 3: Dynamic Tool Generation
+    try:
+        dt_cfg = config.get("dynamic_tools", {})
+        if dt_cfg.get("enabled", False):
+            from .core.tool_generator import ToolGenerator
+            from .tools.generate_tool import GenerateToolTool
+            tool_generator = ToolGenerator(
+                tool_registry=registry,
+                workspace_dir=workspace,
+                max_tools=dt_cfg.get("max_tools", 50),
+            )
+            loaded = tool_generator.load_tools()
+            agent.tool_generator = tool_generator
+            registry.register(GenerateToolTool(tool_generator=tool_generator))
+            logger.info(f"Dynamic tool generation enabled ({loaded} tools loaded)")
+    except Exception as e:
+        logger.debug(f"Dynamic tool generation not available: {e}")
+
+    # Feature 4: Smart Context Assembly (wired via ContextManager)
+    # The ContextPriorityScorer is initialized in ContextManager.__init__
+    # when metrics_collector or knowledge_store is provided.
+    try:
+        ctx_cfg = config.get("context_manager.priority_scoring", {})
+        if ctx_cfg.get("enabled", True):
+            if hasattr(agent, 'context_mgr') and agent.context_mgr:
+                from .core.context_manager import ContextPriorityScorer
+                mc = getattr(agent, 'metrics_registry', None)
+                if mc or knowledge_store:
+                    agent.context_mgr._priority_scorer = ContextPriorityScorer(
+                        metrics_collector=mc,
+                        knowledge_store=knowledge_store,
+                    )
+                    logger.info("Smart context priority scoring enabled")
+    except Exception as e:
+        logger.debug(f"Context priority scoring not available: {e}")
+
     # Register Task tool (subagent delegation)
     from .tools.task_tool import TaskTool
 

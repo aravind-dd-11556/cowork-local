@@ -949,7 +949,7 @@ class TestSprint11Integration(unittest.TestCase):
 
     def test_valid_categories(self):
         """VALID_CATEGORIES has expected values."""
-        self.assertEqual(VALID_CATEGORIES, {"facts", "preferences", "decisions"})
+        self.assertEqual(VALID_CATEGORIES, {"facts", "preferences", "decisions", "reflections"})
 
     def test_summarizer_with_mixed_messages(self):
         """Summarizer handles mix of all message types."""

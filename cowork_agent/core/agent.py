@@ -133,6 +133,11 @@ class Agent:
         self.task_scheduler = None           # TaskScheduler instance
         self._scheduler_run_tool = None      # RunScheduledTaskTool (late-bind)
 
+        # Sprint 27: Tier 2 Differentiating Features (set by main.py)
+        self.rollback_journal = None         # RollbackJournal instance
+        self.reflection_engine = None        # ReflectionEngine instance
+        self.tool_generator = None           # ToolGenerator instance
+
         # Callbacks for UI updates
         self.on_tool_start = on_tool_start
         self.on_tool_end = on_tool_end
