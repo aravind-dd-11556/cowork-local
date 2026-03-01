@@ -1023,9 +1023,83 @@ def main() -> None:
                 agent_registry=agent_registry,
                 context_bus=context_bus,
             ))
-            logger.info("Multi-agent system initialized")
+
+            # Sprint 26: Wire Sprint 21 multi-agent enhancement modules
+            from .core.supervisor_strategies import (
+                MapReduceStrategy, DebateStrategy, VotingStrategy,
+            )
+            from .core.agent_specialization import SpecializationRegistry
+            from .core.conversation_router import ConversationRouter
+            from .core.agent_pool import AgentPool, PoolConfig
+            from .core.conflict_resolver import ConflictResolver
+
+            # Specialization registry (task → best agent matching)
+            specialization_registry = SpecializationRegistry()
+            agent.specialization_registry = specialization_registry
+
+            # Conversation router (task analysis + routing)
+            conversation_router = ConversationRouter(
+                spec_registry=specialization_registry,
+            )
+            agent.conversation_router = conversation_router
+
+            # Agent pool (reusable agent instances)
+            pool_cfg = config.get("multi_agent.pool", {})
+            agent_pool = AgentPool(
+                config=PoolConfig(
+                    name=pool_cfg.get("name", "default"),
+                    min_size=pool_cfg.get("min_size", 1),
+                    max_size=pool_cfg.get("max_size", 10),
+                ),
+            )
+            agent.agent_pool = agent_pool
+
+            # Conflict resolver (for multi-agent output merging)
+            agent.conflict_resolver = ConflictResolver()
+
+            logger.info(
+                "Multi-agent system initialized (with specialization, "
+                "routing, pool, conflict resolver)"
+            )
     except Exception as e:
         logger.warning(f"Multi-agent system not available: {e}")
+
+    # ── Sprint 26: Wire Remaining Modules ────────────────────────────
+
+    # Multimodal input support (image detection + encoding)
+    try:
+        from .core.multimodal import parse_multimodal_input, load_image
+        agent.multimodal_parser = parse_multimodal_input
+        agent.image_loader = load_image
+        logger.info("Multimodal input support initialized")
+    except Exception as e:
+        logger.debug(f"Multimodal support not available: {e}")
+
+    # Hybrid cache (two-tier memory + disk)
+    try:
+        hc_cfg = config.get("hybrid_cache", {})
+        if hc_cfg.get("enabled", False):
+            from .core.hybrid_cache import HybridResponseCache
+            hybrid_cache = HybridResponseCache(
+                workspace_dir=workspace,
+                max_memory_entries=hc_cfg.get("max_memory_entries", 200),
+                ttl=hc_cfg.get("ttl_seconds", 3600),
+            )
+            agent.hybrid_cache = hybrid_cache
+            logger.info("Hybrid cache initialized")
+    except Exception as e:
+        logger.debug(f"Hybrid cache not available: {e}")
+
+    # Test coverage collector (pytest report ingestion)
+    try:
+        tc_cfg = config.get("test_coverage", {})
+        if tc_cfg.get("enabled", False):
+            from .core.test_coverage_collector import CoverageCollector
+            coverage_collector = CoverageCollector()
+            agent.coverage_collector = coverage_collector
+            logger.info("Test coverage collector initialized")
+    except Exception as e:
+        logger.debug(f"Test coverage collector not available: {e}")
 
     # Register Task tool (subagent delegation)
     from .tools.task_tool import TaskTool

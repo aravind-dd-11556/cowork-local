@@ -604,4 +604,27 @@ class RestAPIInterface(BaseInterface):
             log_level="info",
         )
         server = uvicorn.Server(config)
-        await server.serve()
+
+        # Sprint 26: Start scheduler background loop alongside API server
+        scheduler_task = None
+        agent = self.agent if hasattr(self, 'agent') else None
+        if agent and hasattr(agent, 'task_scheduler') and agent.task_scheduler:
+            async def _scheduler_agent_runner(prompt_text: str) -> str:
+                return await agent.run(prompt_text)
+            scheduler_task = asyncio.create_task(
+                agent.task_scheduler.start(agent_runner=_scheduler_agent_runner)
+            )
+            if hasattr(agent, '_scheduler_run_tool') and agent._scheduler_run_tool:
+                agent._scheduler_run_tool.set_agent_runner(_scheduler_agent_runner)
+
+        try:
+            await server.serve()
+        finally:
+            if scheduler_task and not scheduler_task.done():
+                if agent and hasattr(agent, 'task_scheduler'):
+                    agent.task_scheduler.stop()
+                scheduler_task.cancel()
+                try:
+                    await scheduler_task
+                except asyncio.CancelledError:
+                    pass

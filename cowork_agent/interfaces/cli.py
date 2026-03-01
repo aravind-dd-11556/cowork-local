@@ -1010,6 +1010,18 @@ class CLI:
         self._setup_readline()
         self._print_banner()
 
+        # Sprint 26: Start scheduler background loop if configured
+        scheduler_task = None
+        if hasattr(self.agent, 'task_scheduler') and self.agent.task_scheduler:
+            async def _scheduler_agent_runner(prompt_text: str) -> str:
+                return await self.agent.run(prompt_text)
+            scheduler_task = asyncio.create_task(
+                self.agent.task_scheduler.start(agent_runner=_scheduler_agent_runner)
+            )
+            # Also late-bind agent runner on the run-now tool
+            if hasattr(self.agent, '_scheduler_run_tool') and self.agent._scheduler_run_tool:
+                self.agent._scheduler_run_tool.set_agent_runner(_scheduler_agent_runner)
+
         # Build the prompt once with proper readline escape wrapping
         prompt = self._rl_prompt(
             f"{Colors.BOLD}{Colors.BLUE}You ▸ {Colors.RESET}"
@@ -1054,6 +1066,16 @@ class CLI:
 
             except Exception as e:
                 print(f"\n  {Colors.RED}Error: {str(e)}{Colors.RESET}\n")
+
+        # Sprint 26: Stop scheduler background loop
+        if scheduler_task and not scheduler_task.done():
+            if hasattr(self.agent, 'task_scheduler') and self.agent.task_scheduler:
+                self.agent.task_scheduler.stop()
+            scheduler_task.cancel()
+            try:
+                await scheduler_task
+            except asyncio.CancelledError:
+                pass
 
         # Stop any running remote services before exit
         if self._remote_services:

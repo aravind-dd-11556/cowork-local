@@ -123,6 +123,15 @@ class Agent:
         self.specialization_registry = None  # SpecializationRegistry instance
         self.conversation_router = None      # ConversationRouter instance
         self.agent_pool = None               # AgentPool instance
+        self.conflict_resolver = None        # ConflictResolver instance
+
+        # Sprint 26: Module Wiring Completion (set by main.py)
+        self.multimodal_parser = None        # parse_multimodal_input function
+        self.image_loader = None             # load_image function
+        self.hybrid_cache = None             # HybridResponseCache instance
+        self.coverage_collector = None       # CoverageCollector instance
+        self.task_scheduler = None           # TaskScheduler instance
+        self._scheduler_run_tool = None      # RunScheduledTaskTool (late-bind)
 
         # Callbacks for UI updates
         self.on_tool_start = on_tool_start
