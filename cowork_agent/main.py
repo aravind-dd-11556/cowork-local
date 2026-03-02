@@ -1333,6 +1333,28 @@ def main() -> None:
     except Exception as e:
         logger.debug(f"Browser automation tools not available: {e}")
 
+    # ── Sprint 36: CRM Integration Tools ──
+    try:
+        from .tools.crm_tools import (
+            CrmGetRecordsTool,
+            CrmSearchRecordsTool,
+            CrmCreateRecordsTool,
+            CrmUpdateRecordsTool,
+            CrmDeleteRecordsTool,
+            CrmUpsertRecordsTool,
+            InMemoryCrmBackend,
+        )
+        crm_backend = InMemoryCrmBackend()
+        registry.register(CrmGetRecordsTool(crm_backend=crm_backend))
+        registry.register(CrmSearchRecordsTool(crm_backend=crm_backend))
+        registry.register(CrmCreateRecordsTool(crm_backend=crm_backend))
+        registry.register(CrmUpdateRecordsTool(crm_backend=crm_backend))
+        registry.register(CrmDeleteRecordsTool(crm_backend=crm_backend))
+        registry.register(CrmUpsertRecordsTool(crm_backend=crm_backend))
+        logger.info("CRM integration tools registered (6 tools)")
+    except Exception as e:
+        logger.debug(f"CRM tools not available: {e}")
+
     # ── Sprint 30: Task Tool with Agent Types, Worktree Isolation, Resume ──
     from .tools.task_tool import TaskTool
 
