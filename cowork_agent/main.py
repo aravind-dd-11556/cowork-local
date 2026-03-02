@@ -1300,6 +1300,23 @@ def main() -> None:
             registry.register(FormInputTool(browser_session=browser_session))
             registry.register(ComputerTool(browser_session=browser_session))
             logger.info("Browser automation tools registered (7 core tools)")
+
+            # Sprint 34: Extended browser tools
+            from .tools.browser_tools_ext import (
+                JavaScriptTool,
+                GetPageTextTool,
+                ReadConsoleMessagesTool,
+                ReadNetworkRequestsTool,
+                UploadImageTool,
+                ResizeWindowTool,
+            )
+            registry.register(JavaScriptTool(browser_session=browser_session))
+            registry.register(GetPageTextTool(browser_session=browser_session))
+            registry.register(ReadConsoleMessagesTool(browser_session=browser_session))
+            registry.register(ReadNetworkRequestsTool(browser_session=browser_session))
+            registry.register(UploadImageTool(browser_session=browser_session))
+            registry.register(ResizeWindowTool(browser_session=browser_session))
+            logger.info("Browser automation extended tools registered (6 tools)")
     except Exception as e:
         logger.debug(f"Browser automation tools not available: {e}")
 
