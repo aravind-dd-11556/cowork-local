@@ -141,6 +141,22 @@ class Agent:
         # Sprint 28: Adaptive Tool Chaining (set by main.py)
         self.adaptive_chain_executor = None  # AdaptiveChainExecutor instance
 
+        # Sprint 40: Self-Healing Pipelines (set by main.py)
+        self.self_healing_engine = None  # SelfHealingEngine instance
+
+        # Sprint 41: Cross-Session Task Continuity (set by main.py)
+        self.task_continuity = None    # TaskContinuityManager instance
+        self.task_queue = None         # PersistentTaskQueue instance
+        self.checkpoint_manager = None # CheckpointManager instance
+
+        # Sprint 42: Live Workspace Awareness (set by main.py)
+        self.file_watcher = None       # FileWatcher instance
+        self.suggestion_engine = None  # SuggestionEngine instance
+        self.git_monitor = None        # GitMonitor instance
+
+        # Sprint 43: Multi-Agent Crew Mode (set by main.py)
+        self.crew_manager = None       # CrewManager instance
+
         # Sprint 29: Skill-before-work enforcement
         self._skill_enforcement_enabled = True  # enforce skill reading before work
 

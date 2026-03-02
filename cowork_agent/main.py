@@ -1262,6 +1262,100 @@ def main() -> None:
     except Exception as e:
         logger.debug(f"Adaptive tool chaining not available: {e}")
 
+    # ── Sprint 40: Self-Healing Pipelines ────────────────────────────
+
+    try:
+        sh_cfg = config.get("self_healing", {})
+        if sh_cfg.get("enabled", True):
+            from .core.self_healing import SelfHealingConfig, SelfHealingEngine
+            from .core.failure_diagnosis import FailureDiagnostic
+            from .core.recovery_strategies import RecoveryStrategyEngine
+            healing_config = SelfHealingConfig(
+                enabled=sh_cfg.get("enabled", True),
+                max_recovery_attempts=sh_cfg.get("max_recovery_attempts", 2),
+                auto_rollback_on_failure=sh_cfg.get("auto_rollback", True),
+                recovery_timeout_seconds=sh_cfg.get("timeout_seconds", 60.0),
+            )
+            diagnostic = FailureDiagnostic(tool_registry=registry)
+            strategy_engine = RecoveryStrategyEngine()
+            agent.self_healing_engine = SelfHealingEngine(
+                config=healing_config,
+                diagnostic=diagnostic,
+                strategy_engine=strategy_engine,
+                state_manager=getattr(agent, 'state_snapshot_manager', None),
+                rollback_journal=getattr(agent, 'rollback_journal', None),
+            )
+            logger.info("Self-healing pipelines enabled")
+    except Exception as e:
+        logger.debug(f"Self-healing pipelines not available: {e}")
+
+    # ── Sprint 41: Cross-Session Task Continuity ───────────────────────
+
+    try:
+        tc_cfg = config.get("task_continuity", {})
+        if tc_cfg.get("enabled", True):
+            from .core.task_continuity import TaskContinuityManager
+            from .core.task_queue import PersistentTaskQueue
+            from .core.checkpoint_manager import CheckpointManager
+            _ws = config.get("workspace_dir", ".")
+            agent.task_continuity = TaskContinuityManager(workspace_path=_ws)
+            agent.task_queue = PersistentTaskQueue(workspace_path=_ws)
+            agent.checkpoint_manager = CheckpointManager(workspace_path=_ws)
+            logger.info("Cross-session task continuity enabled")
+    except Exception as e:
+        logger.debug(f"Task continuity not available: {e}")
+
+    # ── Sprint 42: Live Workspace Awareness ─────────────────────────────
+
+    try:
+        fw_cfg = config.get("file_watcher", {})
+        if fw_cfg.get("enabled", True):
+            from .core.file_watcher import FileWatcher, FileWatcherConfig
+            from .core.workspace_analyzer import WorkspaceAnalyzer
+            from .core.proactive_suggestions import SuggestionEngine
+            from .core.git_monitor import GitMonitor
+            _ws = config.get("workspace_dir", ".")
+            _fw_config = FileWatcherConfig(
+                poll_interval_seconds=fw_cfg.get("poll_interval", 2.0),
+                debounce_seconds=fw_cfg.get("debounce", 1.0),
+            )
+            _analyzer = WorkspaceAnalyzer(workspace_path=_ws)
+            agent.suggestion_engine = SuggestionEngine(workspace_analyzer=_analyzer)
+            agent.file_watcher = FileWatcher(
+                workspace_path=_ws, config=_fw_config,
+            )
+            agent.git_monitor = GitMonitor(workspace_path=_ws)
+            logger.info("Live workspace awareness enabled")
+    except Exception as e:
+        logger.debug(f"File watcher not available: {e}")
+
+    # ── Sprint 43: Multi-Agent Crew Mode ─────────────────────────────────
+
+    try:
+        crew_cfg = config.get("crew", {})
+        if crew_cfg.get("enabled", True):
+            from .core.crew import CrewManager, CrewConfig, CrewStrategy
+            from .core.crew_roles import RoleAssigner
+            from .core.task_decomposer import TaskDecomposer
+            from .core.result_aggregator import ResultAggregator
+            _crew_config = CrewConfig(
+                name=crew_cfg.get("name", "default_crew"),
+                max_agents=crew_cfg.get("max_agents", 4),
+                timeout_total=crew_cfg.get("timeout_total", 300.0),
+                auto_review=crew_cfg.get("auto_review", True),
+            )
+            if "strategy" in crew_cfg:
+                _crew_config.strategy = CrewStrategy(crew_cfg["strategy"])
+            agent.crew_manager = CrewManager(
+                config=_crew_config,
+                task_decomposer=TaskDecomposer(),
+                role_assigner=RoleAssigner(),
+                result_aggregator=ResultAggregator(),
+            )
+            logger.info("Multi-agent crew mode enabled")
+    except Exception as e:
+        logger.debug(f"Crew mode not available: {e}")
+
     # ── Sprint 29: Skill Tool + Skill Content ──────────────────────────
 
     try:
