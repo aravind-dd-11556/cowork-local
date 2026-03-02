@@ -1215,6 +1215,37 @@ def main() -> None:
     except Exception as e:
         logger.debug(f"Skill tool not available: {e}")
 
+    # ── Sprint 31: MCP Registry + Plugin Marketplace ────────────────────
+    try:
+        mcp_reg_cfg = config.get("mcp_registry", {})
+        if mcp_reg_cfg.get("enabled", True):
+            from .core.connector_registry import (
+                ConnectorRegistry,
+                PluginRegistry,
+                create_default_connector_catalog,
+                create_default_plugin_catalog,
+            )
+            from .tools.mcp_registry_tools import (
+                SearchMCPRegistryTool,
+                SuggestConnectorsTool,
+                SearchPluginsTool,
+                SuggestPluginInstallTool,
+            )
+
+            connector_registry = create_default_connector_catalog()
+            plugin_registry = create_default_plugin_catalog()
+
+            registry.register(SearchMCPRegistryTool(connector_registry=connector_registry))
+            registry.register(SuggestConnectorsTool(connector_registry=connector_registry))
+            registry.register(SearchPluginsTool(plugin_registry=plugin_registry))
+            registry.register(SuggestPluginInstallTool(plugin_registry=plugin_registry))
+            logger.info(
+                "MCP Registry tools registered: %d connectors, %d plugins",
+                len(connector_registry), len(plugin_registry),
+            )
+    except Exception as e:
+        logger.debug(f"MCP Registry tools not available: {e}")
+
     # ── Sprint 30: Task Tool with Agent Types, Worktree Isolation, Resume ──
     from .tools.task_tool import TaskTool
 
