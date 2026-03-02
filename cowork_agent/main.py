@@ -1317,6 +1317,19 @@ def main() -> None:
             registry.register(UploadImageTool(browser_session=browser_session))
             registry.register(ResizeWindowTool(browser_session=browser_session))
             logger.info("Browser automation extended tools registered (6 tools)")
+
+            # Sprint 35: Browser automation extras
+            from .tools.browser_tools_extra import (
+                GifCreatorTool,
+                ShortcutsListTool,
+                ShortcutsExecuteTool,
+                SwitchBrowserTool,
+            )
+            registry.register(GifCreatorTool(browser_session=browser_session))
+            registry.register(ShortcutsListTool(browser_session=browser_session))
+            registry.register(ShortcutsExecuteTool(browser_session=browser_session))
+            registry.register(SwitchBrowserTool(browser_session=browser_session))
+            logger.info("Browser automation extras registered (4 tools)")
     except Exception as e:
         logger.debug(f"Browser automation tools not available: {e}")
 
