@@ -1572,6 +1572,11 @@ class Agent:
         Scans the last few messages for tool results from tools that
         produce linkable content (web_fetch, web_search, MCP tools, file reads).
         This enables the citation_requirements hint in the env section.
+
+        Checks both:
+        - Messages with role="tool_result" that have tool_results list
+          (standard Message model — tool_id contains the tool name)
+        - Messages with a dynamic tool_name attribute (for flexibility)
         """
         linkable_tools = {
             "web_fetch", "web_search", "read", "glob", "grep",
@@ -1579,7 +1584,13 @@ class Agent:
         # Check last 5 messages for tool results
         recent = self._messages[-5:] if len(self._messages) >= 5 else self._messages
         for msg in recent:
-            if msg.role == "tool" and hasattr(msg, "tool_name"):
+            # Path 1: Standard Message with tool_results list
+            if msg.role == "tool_result" and msg.tool_results:
+                for tr in msg.tool_results:
+                    if tr.tool_id in linkable_tools:
+                        return True
+            # Path 2: Dynamic tool_name attribute (flexibility for extensions)
+            if hasattr(msg, "tool_name") and getattr(msg, "tool_name", None):
                 if msg.tool_name in linkable_tools:
                     return True
         return False
