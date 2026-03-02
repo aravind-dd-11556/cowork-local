@@ -1,9 +1,12 @@
 """
 System Prompt Builder — composes the full system prompt from modular XML-tagged sections.
 
+Sprint 37: Updated to support dynamic session paths, citation context, and
+faithful prompt structure matching the real Cowork approach.
+
 Mirrors the real Cowork approach:
   - XML tags for structural boundaries (<env>, <tools>, <claude_behavior>, etc.)
-  - Dynamic runtime context injection (date, time, workspace, todos)
+  - Dynamic runtime context injection (date, time, workspace, session paths, todos)
   - Tool schemas with full JSON descriptions
   - Behavioral rules as nested XML sections
 """
@@ -25,18 +28,30 @@ class PromptBuilder:
     The real Cowork prompt follows this layout:
         <application_details> ... </application_details>
         <claude_behavior> ... </claude_behavior>
-        <env> ... </env>
-        <tools> ... (full JSON schemas) </tools>
-        <file_handling_rules> ... </file_handling_rules>
-        <critical_security_rules> ... </critical_security_rules>
+        <ask_user_question_tool> ... </ask_user_question_tool>
         <todo_list_tool> ... </todo_list_tool>
-        ... (more XML sections)
+        <citation_requirements> ... </citation_requirements>
+        <computer_use> ... </computer_use>
+        <critical_injection_defense> ... </critical_injection_defense>
+        <critical_security_rules> ... </critical_security_rules>
+        <user_privacy> ... </user_privacy>
+        <action_types> ... </action_types>
+        <mandatory_copyright_requirements> ... </mandatory_copyright_requirements>
+        <user> ... </user>
+        <env> ... </env>
+        <available_tools> ... </available_tools>
+        <skills_instructions> ... </skills_instructions>
+        <available_skills> ... </available_skills>
+        <memory> ... </memory>
+        <system-reminder> ... </system-reminder>
     """
 
     def __init__(self, config: dict, skill_registry: Optional[SkillRegistry] = None):
         self.config = config
         self.workspace_dir = config.get("agent", {}).get("workspace_dir", "./workspace")
         self.skill_registry = skill_registry
+        # Sprint 37: Session path for dynamic file_handling_rules injection
+        self.session_path = config.get("agent", {}).get("session_path", "")
 
     def build(
         self,
@@ -64,7 +79,7 @@ class PromptBuilder:
         # 2. User context
         sections.append(self._section_user())
 
-        # 3. Environment / runtime context
+        # 3. Environment / runtime context (rebuilt every iteration)
         sections.append(self._section_env(ctx))
 
         # 4. Available tools with full schemas
@@ -83,19 +98,19 @@ class PromptBuilder:
             if skills_section:
                 sections.append(skills_section)
 
-        # 6. Active skill content (injected when matched)
+        # 7. Active skill content (injected when matched)
         active_skills = ctx.get("active_skills", [])
         if active_skills and self.skill_registry:
             skill_prompt = self.skill_registry.get_skill_prompt_section(active_skills)
             if skill_prompt:
                 sections.append(skill_prompt)
 
-        # 7. Sprint 11: Memory section (summary + knowledge)
+        # 8. Sprint 11: Memory section (summary + knowledge)
         memory_section = self._section_memory(ctx)
         if memory_section:
             sections.append(memory_section)
 
-        # 8. Runtime reminder (active todos, iteration info)
+        # 9. Runtime reminder (active todos, iteration info)
         reminder = self._section_system_reminder(ctx)
         if reminder:
             sections.append(reminder)
@@ -107,9 +122,9 @@ class PromptBuilder:
         user_name = self.config.get("user", {}).get("name", "User")
         user_email = self.config.get("user", {}).get("email", "")
 
-        lines = [f"<user>", f"Name: {user_name}"]
+        lines = ["<user>", f"Name: {user_name}"]
         if user_email:
-            lines.append(f"Email: {user_email}")
+            lines.append(f"Email address: {user_email}")
         lines.append("</user>")
         return "\n".join(lines)
 
@@ -135,6 +150,11 @@ class PromptBuilder:
             f"User selected a folder: {'yes' if self.workspace_dir else 'no'}",
         ]
 
+        # Sprint 37: Dynamic session path for file_handling_rules
+        session_path = context.get("session_path", self.session_path)
+        if session_path:
+            lines.append(f"Session path: {session_path}")
+
         if context.get("iteration"):
             lines.append(f"Agent iteration: {context['iteration']} of 15")
 
@@ -142,6 +162,12 @@ class PromptBuilder:
         hint = context.get("skill_enforcement_hint", "")
         if hint:
             lines.append(f"Skill hint: {hint}")
+
+        # Sprint 37: Citation hint (when linkable sources were used)
+        if context.get("has_linkable_sources"):
+            lines.append(
+                "Citation reminder: Include a Sources: section at end of response"
+            )
 
         lines.append("</env>")
         return "\n".join(lines)

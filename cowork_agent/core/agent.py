@@ -1496,6 +1496,16 @@ class Agent:
             "iteration": self._iteration,
         }
 
+        # Sprint 37: Dynamic session path for file_handling_rules
+        pb_config = getattr(self.prompt_builder, "config", {})
+        session_path = pb_config.get("agent", {}).get("session_path", "")
+        if session_path:
+            ctx["session_path"] = session_path
+
+        # Sprint 37: Citation hint — check if recent tool calls used linkable sources
+        if self._has_linkable_tool_results():
+            ctx["has_linkable_sources"] = True
+
         # Sprint 11/15: Memory context with relevance scoring
         if self._sliding_summary:
             ctx["memory_summary"] = self._sliding_summary
@@ -1554,6 +1564,25 @@ class Agent:
                         )
 
         return ctx
+
+    def _has_linkable_tool_results(self) -> bool:
+        """
+        Sprint 37: Check if recent tool results came from linkable sources.
+
+        Scans the last few messages for tool results from tools that
+        produce linkable content (web_fetch, web_search, MCP tools, file reads).
+        This enables the citation_requirements hint in the env section.
+        """
+        linkable_tools = {
+            "web_fetch", "web_search", "read", "glob", "grep",
+        }
+        # Check last 5 messages for tool results
+        recent = self._messages[-5:] if len(self._messages) >= 5 else self._messages
+        for msg in recent:
+            if msg.role == "tool" and hasattr(msg, "tool_name"):
+                if msg.tool_name in linkable_tools:
+                    return True
+        return False
 
     def _inject_scored_knowledge(self, ctx: dict, recent_user_message: str) -> None:
         """

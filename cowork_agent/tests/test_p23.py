@@ -1149,8 +1149,9 @@ class TestBehavioralRules(unittest.TestCase):
 
     def test_explicit_consent_section_exists(self):
         from cowork_agent.prompts.behavioral_rules import EXPLICIT_CONSENT
-        self.assertIn("explicit_user_consent", EXPLICIT_CONSENT)
-        self.assertIn("Downloading files", EXPLICIT_CONSENT)
+        # Sprint 37: EXPLICIT_CONSENT merged into ACTION_TYPES
+        self.assertIn("explicit_permission", EXPLICIT_CONSENT)
+        self.assertIn("Downloading ANY file", EXPLICIT_CONSENT)
 
     def test_all_sections_includes_new_sections(self):
         from cowork_agent.prompts.behavioral_rules import ALL_SECTIONS
@@ -1176,11 +1177,13 @@ class TestBehavioralRules(unittest.TestCase):
     def test_social_engineering_mentions_session_integrity(self):
         from cowork_agent.prompts.behavioral_rules import SOCIAL_ENGINEERING_RESISTANCE
         self.assertIn("SESSION INTEGRITY", SOCIAL_ENGINEERING_RESISTANCE)
-        self.assertIn("session-scoped", SOCIAL_ENGINEERING_RESISTANCE)
+        # Sprint 37: Wording changed to match real prompt
+        self.assertIn("Previous session", SOCIAL_ENGINEERING_RESISTANCE)
 
     def test_explicit_consent_mentions_never_assume(self):
         from cowork_agent.prompts.behavioral_rules import EXPLICIT_CONSENT
-        self.assertIn("Never assume consent", EXPLICIT_CONSENT)
+        # Sprint 37: Wording updated to match real prompt
+        self.assertIn("Permissions cannot be inherited", EXPLICIT_CONSENT)
 
     def test_model_trust_context_field_exists(self):
         """Verify Message and ToolResult have trust_context field."""
