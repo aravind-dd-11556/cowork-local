@@ -272,5 +272,46 @@ class OpenAIProvider(BaseLLMProvider):
         except Exception as e:
             return {"status": "error", "provider": "openai", "error": str(e)}
 
+    async def list_models(self) -> list[dict]:
+        """List available OpenAI models."""
+        if not self.api_key:
+            return []
+        try:
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
+            response = await client.models.list()
+            models = []
+            # Known context lengths for common models
+            _ctx = {
+                "gpt-4o": 128000, "gpt-4o-mini": 128000,
+                "gpt-4-turbo": 128000, "gpt-4": 8192,
+                "gpt-3.5-turbo": 16385, "o1": 200000,
+                "o1-mini": 128000, "o1-preview": 128000,
+                "o3-mini": 200000,
+            }
+            for m in sorted(response.data, key=lambda x: x.id):
+                mid = m.id
+                # Skip internal/system models
+                if any(skip in mid for skip in ["embedding", "tts", "whisper", "dall-e", "moderation"]):
+                    continue
+                ctx = None
+                for prefix, length in _ctx.items():
+                    if mid.startswith(prefix):
+                        ctx = length
+                        break
+                models.append({
+                    "id": mid,
+                    "name": mid,
+                    "context_length": ctx,
+                    "provider": "openai",
+                    "owned_by": getattr(m, "owned_by", ""),
+                    "created": getattr(m, "created", None),
+                })
+            return models
+        except ImportError:
+            return []
+        except Exception:
+            return []
+
 
 ProviderFactory.register("openai", OpenAIProvider)

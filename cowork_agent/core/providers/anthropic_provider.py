@@ -233,5 +233,24 @@ class AnthropicProvider(BaseLLMProvider):
             "note": "API key is set; connection verified on first call",
         }
 
+    async def list_models(self) -> list[dict]:
+        """List available Anthropic models (well-known catalog)."""
+        # Anthropic doesn't have a public /models endpoint,
+        # so we provide the known model catalog with specs.
+        _ANTHROPIC_MODELS = [
+            {"id": "claude-opus-4-5-20251101", "name": "Claude Opus 4.5", "context_length": 200000, "max_output": 32768, "tier": "flagship"},
+            {"id": "claude-sonnet-4-5-20250929", "name": "Claude Sonnet 4.5", "context_length": 200000, "max_output": 16384, "tier": "balanced"},
+            {"id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5", "context_length": 200000, "max_output": 8192, "tier": "fast"},
+            {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4", "context_length": 200000, "max_output": 16384, "tier": "balanced"},
+            {"id": "claude-opus-4-20250514", "name": "Claude Opus 4", "context_length": 200000, "max_output": 32768, "tier": "flagship"},
+            {"id": "claude-3-5-sonnet-20241022", "name": "Claude 3.5 Sonnet", "context_length": 200000, "max_output": 8192, "tier": "legacy"},
+            {"id": "claude-3-5-haiku-20241022", "name": "Claude 3.5 Haiku", "context_length": 200000, "max_output": 8192, "tier": "legacy"},
+            {"id": "claude-3-opus-20240229", "name": "Claude 3 Opus", "context_length": 200000, "max_output": 4096, "tier": "legacy"},
+        ]
+        return [
+            {**m, "provider": "anthropic", "api_key_set": bool(self.api_key)}
+            for m in _ANTHROPIC_MODELS
+        ]
+
 
 ProviderFactory.register("anthropic", AnthropicProvider)

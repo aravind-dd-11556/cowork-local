@@ -159,6 +159,25 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("SLACK_APP_TOKEN"),
         help="Slack app-level token (for slack/all modes)",
     )
+    # Sprint 38: Model selection commands
+    parser.add_argument(
+        "--list-models",
+        nargs="?",
+        const="all",
+        metavar="PROVIDER",
+        help="List available models. Optionally specify provider: ollama, openai, anthropic, openrouter",
+    )
+    parser.add_argument(
+        "--test-model",
+        nargs=2,
+        metavar=("PROVIDER", "MODEL"),
+        help="Test a model connection. Example: --test-model anthropic claude-sonnet-4-5-20250929",
+    )
+    parser.add_argument(
+        "--model-status",
+        action="store_true",
+        help="Show which LLM providers are available and configured",
+    )
     return parser.parse_args()
 
 
@@ -223,6 +242,59 @@ def _prompt_workspace() -> str:
     return workspace
 
 
+def _handle_model_commands(args, config) -> None:
+    """Handle --list-models, --test-model, --model-status CLI commands."""
+    from .core.model_selector import ModelSelector
+
+    selector = ModelSelector(config._data)
+
+    if args.model_status:
+        status = asyncio.run(selector.get_provider_status())
+        print(f"\n  Provider Status:\n")
+        print(selector.format_provider_status(status))
+        prov, model = selector.get_current_model()
+        print(f"\n  Current: {prov} / {model}\n")
+        return
+
+    if args.list_models:
+        provider_name = args.list_models.lower()
+        if provider_name == "all":
+            all_models = asyncio.run(selector.list_all_models())
+            for pname, models in all_models.items():
+                if models:
+                    print(f"\n  {pname.upper()} ({len(models)} models):\n")
+                    show_pricing = pname == "openrouter"
+                    print(selector.format_model_table(models[:30], show_pricing=show_pricing))
+                    if len(models) > 30:
+                        print(f"    ... and {len(models) - 30} more")
+                else:
+                    print(f"\n  {pname}: No models available or not configured.")
+            print()
+        else:
+            models = asyncio.run(selector.list_models(provider_name))
+            if models:
+                show_pricing = provider_name == "openrouter"
+                print(f"\n  {provider_name.upper()} — {len(models)} models:\n")
+                print(selector.format_model_table(models, show_pricing=show_pricing))
+                print()
+            else:
+                print(f"\n  No models found for {provider_name}. Is it configured?\n")
+        return
+
+    if args.test_model:
+        provider_name, model_id = args.test_model
+        print(f"\n  Testing {provider_name}/{model_id}...")
+        result = asyncio.run(selector.test_model(provider_name, model_id))
+        if result.success:
+            print(f"  ✅ Success! Latency: {result.latency_ms:.0f}ms")
+            if result.output_preview:
+                print(f"  Response: {result.output_preview[:100]}")
+        else:
+            print(f"  ❌ Failed: {result.error}")
+        print()
+        return
+
+
 def main() -> None:
     args = parse_args()
 
@@ -244,8 +316,12 @@ def main() -> None:
     if args.provider:
         config.set("llm.provider", args.provider)
     if args.model:
-        provider_name = config.get("llm.provider", "ollama")
-        config.set(f"llm.{provider_name}.model", args.model)
+        config.set("llm.model", args.model)
+
+    # ── Sprint 38: Handle model subcommands (exit early) ──
+    if args.list_models or args.test_model or args.model_status:
+        _handle_model_commands(args, config)
+        return
 
     # Resolve workspace (interactive prompt if needed)
     workspace = resolve_workspace(config, args.workspace)

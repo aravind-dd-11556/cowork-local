@@ -86,6 +86,21 @@ class BaseLLMProvider(ABC):
         """Check if the provider is available and configured."""
         pass
 
+    async def list_models(self) -> list[dict]:
+        """
+        List available models from this provider.
+
+        Returns a list of dicts, each with at least:
+          - id: str — model identifier to use in config
+          - name: str — human-friendly display name
+          - context_length: int | None — max context window
+          - provider: str — provider name
+
+        Subclasses should override for real API calls.
+        Default implementation returns an empty list.
+        """
+        return []
+
     @property
     def provider_name(self) -> str:
         return self.__class__.__name__

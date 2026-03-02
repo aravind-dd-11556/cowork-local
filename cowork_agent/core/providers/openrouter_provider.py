@@ -248,5 +248,52 @@ class OpenRouterProvider(OpenAIProvider):
         except Exception as e:
             return {"status": "error", "provider": "openrouter", "error": str(e)}
 
+    async def list_models(self, filter_text: str = "") -> list[dict]:
+        """List available models from OpenRouter (200+ models)."""
+        if not self.api_key:
+            return []
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    f"{self.base_url.rstrip('/').replace('/v1', '')}/api/v1/models",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        **self._extra_headers,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+            models = []
+            for m in data.get("data", []):
+                mid = m.get("id", "")
+                name = m.get("name", mid)
+
+                # Apply filter
+                if filter_text and filter_text.lower() not in mid.lower() and filter_text.lower() not in name.lower():
+                    continue
+
+                pricing = m.get("pricing", {})
+                prompt_price = float(pricing.get("prompt", 0)) * 1_000_000 if pricing.get("prompt") else None
+                completion_price = float(pricing.get("completion", 0)) * 1_000_000 if pricing.get("completion") else None
+
+                models.append({
+                    "id": mid,
+                    "name": name,
+                    "context_length": m.get("context_length"),
+                    "provider": "openrouter",
+                    "top_provider": m.get("top_provider", {}).get("max_completion_tokens"),
+                    "pricing_prompt_per_1m": prompt_price,
+                    "pricing_completion_per_1m": completion_price,
+                    "modality": m.get("architecture", {}).get("modality", ""),
+                    "tokenizer": m.get("architecture", {}).get("tokenizer", ""),
+                })
+            return models
+        except ImportError:
+            return []
+        except Exception:
+            return []
+
 
 ProviderFactory.register("openrouter", OpenRouterProvider)

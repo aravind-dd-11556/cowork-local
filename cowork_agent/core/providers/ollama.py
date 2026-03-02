@@ -429,6 +429,72 @@ If the user asks to "create", "save", "write", or "draft" a file — USE the wri
         except Exception as e:
             return {"status": "error", "provider": "ollama", "error": str(e)}
 
+    async def list_models(self) -> list[dict]:
+        """List locally available Ollama models."""
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(f"{self.base_url}/api/tags")
+                resp.raise_for_status()
+                data = resp.json()
+            models = []
+            for m in data.get("models", []):
+                name = m.get("name", "unknown")
+                details = m.get("details", {})
+                size_bytes = m.get("size", 0)
+                size_gb = round(size_bytes / (1024**3), 1) if size_bytes else None
+                models.append({
+                    "id": name,
+                    "name": name.split(":")[0],
+                    "context_length": None,  # Ollama doesn't expose this in /api/tags
+                    "provider": "ollama",
+                    "family": details.get("family", ""),
+                    "parameter_size": details.get("parameter_size", ""),
+                    "quantization": details.get("quantization_level", ""),
+                    "size_gb": size_gb,
+                    "format": details.get("format", ""),
+                    "modified_at": m.get("modified_at", ""),
+                })
+            return models
+        except httpx.ConnectError:
+            logger.warning(f"Cannot connect to Ollama at {self.base_url}")
+            return []
+        except Exception as e:
+            logger.warning(f"Ollama list_models error: {e}")
+            return []
+
+    async def list_running_models(self) -> list[dict]:
+        """List currently loaded/running models in Ollama."""
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(f"{self.base_url}/api/ps")
+                resp.raise_for_status()
+                data = resp.json()
+            return [
+                {
+                    "id": m.get("name", ""),
+                    "size_gb": round(m.get("size", 0) / (1024**3), 1),
+                    "vram_gb": round(m.get("size_vram", 0) / (1024**3), 1),
+                    "expires_at": m.get("expires_at", ""),
+                }
+                for m in data.get("models", [])
+            ]
+        except Exception:
+            return []
+
+    async def pull_model(self, model_name: str) -> bool:
+        """Pull/download a model from Ollama registry."""
+        try:
+            async with httpx.AsyncClient(timeout=600) as client:
+                resp = await client.post(
+                    f"{self.base_url}/api/pull",
+                    json={"name": model_name, "stream": False},
+                )
+                resp.raise_for_status()
+                return True
+        except Exception as e:
+            logger.error(f"Failed to pull model {model_name}: {e}")
+            return False
+
 
 def _escape_json_strings(raw: str) -> str:
     """

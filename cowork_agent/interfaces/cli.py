@@ -22,6 +22,8 @@ from ..core.shutdown_manager import ShutdownManager
 from ..core.agent_session import AgentSessionManager
 from ..core.conversation_store import ConversationStore
 from ..core.state_snapshot import StateSnapshotManager
+from ..core.model_selector import ModelSelector, ModelInfo
+from ..core.providers.base import ProviderFactory
 from .rich_output import RichOutput
 
 
@@ -132,6 +134,7 @@ class CLI:
         self._tool_timers: dict[str, float] = {}  # tool_id -> start_time
         self._agent_factory = agent_factory
         self._workspace = workspace or os.getcwd()
+        self._model_selector: Optional[ModelSelector] = None  # Lazy init
 
         # Remote control state
         self._remote_services: dict[str, dict] = {}  # name -> {task, started_at, info}
@@ -257,7 +260,8 @@ class CLI:
         commands = [
             "/help", "/clear", "/history", "/todos", "/config",
             "/health", "/sessions", "/snapshot", "/snapshots",
-            "/metrics", "/analytics", "/remote-control", "/rc", "/exit",
+            "/metrics", "/analytics", "/model",
+            "/remote-control", "/rc", "/exit",
         ]
         if text.startswith("/"):
             matches = [c for c in commands if c.startswith(text)]
@@ -345,6 +349,10 @@ class CLI:
             self._show_analytics()
             return True
 
+        elif command == "/model":
+            await self._handle_model_command(arg)
+            return True
+
         elif command in ("/remote-control", "/rc"):
             await self._handle_remote_control(arg)
             return True
@@ -373,6 +381,7 @@ class CLI:
   {Colors.CYAN}/snapshots{Colors.RESET} List saved snapshots
   {Colors.CYAN}/metrics{Colors.RESET}   Show tool execution metrics
   {Colors.CYAN}/analytics{Colors.RESET} Show session usage analytics
+  {Colors.CYAN}/model{Colors.RESET}     Model selection (list, select, test, info)
   {Colors.CYAN}/remote-control{Colors.RESET} Manage remote interfaces (API, Telegram, Slack)
   {Colors.CYAN}/rc{Colors.RESET}        Shortcut for /remote-control
   {Colors.CYAN}/exit{Colors.RESET}      Exit the agent
@@ -967,6 +976,298 @@ class CLI:
                     pass
             print(f"  {Colors.GREEN}✓ {name} stopped.{Colors.RESET}")
         print()
+
+    # ── Model Selection ─────────────────────────────────────────
+
+    def _get_model_selector(self) -> ModelSelector:
+        """Lazy-init the model selector from the agent's config."""
+        if self._model_selector is None:
+            pb = getattr(self.agent, "prompt_builder", None)
+            config_data = getattr(pb, "config", {}) if pb else {}
+            self._model_selector = ModelSelector(config_data)
+        return self._model_selector
+
+    async def _handle_model_command(self, arg: str) -> None:
+        """Handle /model subcommands."""
+        parts = arg.strip().split(None, 1)
+        subcmd = parts[0].lower() if parts else ""
+        sub_arg = parts[1] if len(parts) > 1 else ""
+
+        if subcmd in ("", "help"):
+            self._model_help()
+        elif subcmd == "status":
+            await self._model_status()
+        elif subcmd == "current":
+            self._model_current()
+        elif subcmd == "list":
+            await self._model_list(sub_arg)
+        elif subcmd == "select":
+            await self._model_select(sub_arg)
+        elif subcmd == "test":
+            await self._model_test(sub_arg)
+        elif subcmd == "popular":
+            self._model_popular(sub_arg)
+        elif subcmd == "use":
+            self._model_use(sub_arg)
+        else:
+            print(f"  {Colors.RED}Unknown subcommand '{subcmd}'.{Colors.RESET}")
+            self._model_help()
+
+    def _model_help(self) -> None:
+        print(f"""
+{Colors.BOLD}Model Selection — Switch between LLM providers and models{Colors.RESET}
+
+  {Colors.CYAN}/model status{Colors.RESET}              Show which providers are available
+  {Colors.CYAN}/model current{Colors.RESET}             Show current provider & model
+  {Colors.CYAN}/model list <provider>{Colors.RESET}     List models from a provider
+  {Colors.CYAN}/model list all{Colors.RESET}            List models from ALL providers
+  {Colors.CYAN}/model popular [prov]{Colors.RESET}      Show popular/recommended models
+  {Colors.CYAN}/model select <provider>{Colors.RESET}   Interactive model selection
+  {Colors.CYAN}/model test <prov> <model>{Colors.RESET} Test a model connection
+  {Colors.CYAN}/model use <prov> <model>{Colors.RESET}  Switch to a model immediately
+
+{Colors.BOLD}Examples:{Colors.RESET}
+  /model use ollama llama3.1:8b
+  /model use anthropic claude-sonnet-4-5-20250929
+  /model use openai gpt-4o
+  /model use openrouter anthropic/claude-sonnet-4
+  /model list ollama
+  /model test openai gpt-4o
+  /model select anthropic
+""")
+
+    async def _model_status(self) -> None:
+        """Show provider availability."""
+        selector = self._get_model_selector()
+        print(f"\n{Colors.BOLD}  Provider Status:{Colors.RESET}\n")
+
+        self._spinner.start("Checking providers")
+        try:
+            status = await selector.get_provider_status()
+        finally:
+            self._spinner.stop()
+
+        print(selector.format_provider_status(status))
+
+        # Show current
+        prov, model = selector.get_current_model()
+        print(f"\n  {Colors.BOLD}Current:{Colors.RESET} {Colors.CYAN}{prov}{Colors.RESET} / {Colors.GREEN}{model}{Colors.RESET}\n")
+
+    def _model_current(self) -> None:
+        """Show current model config."""
+        provider = self.agent.provider
+        pname = getattr(provider, "provider_name", provider.__class__.__name__)
+        print(f"""
+  {Colors.BOLD}Provider:{Colors.RESET}    {pname}
+  {Colors.BOLD}Model:{Colors.RESET}       {provider.model}
+  {Colors.BOLD}Temperature:{Colors.RESET} {provider.temperature}
+  {Colors.BOLD}Max Tokens:{Colors.RESET}  {provider.max_tokens}
+  {Colors.BOLD}Base URL:{Colors.RESET}    {getattr(provider, 'base_url', 'N/A')}
+""")
+
+    async def _model_list(self, arg: str) -> None:
+        """List models from a provider or all providers."""
+        selector = self._get_model_selector()
+        parts = arg.strip().split(None, 1)
+        provider_name = parts[0].lower() if parts else ""
+        filter_text = parts[1] if len(parts) > 1 else ""
+
+        if not provider_name:
+            print(f"  {Colors.YELLOW}Specify a provider: ollama, openai, anthropic, openrouter, or 'all'{Colors.RESET}\n")
+            return
+
+        if provider_name == "all":
+            self._spinner.start("Fetching models from all providers")
+            try:
+                all_models = await selector.list_all_models(filter_text)
+            finally:
+                self._spinner.stop()
+
+            for pname, models in all_models.items():
+                if models:
+                    print(f"\n  {Colors.BOLD}{Colors.CYAN}{pname.upper()}{Colors.RESET} ({len(models)} models):\n")
+                    show_pricing = pname == "openrouter"
+                    print(selector.format_model_table(models[:20], show_pricing=show_pricing))
+                    if len(models) > 20:
+                        print(f"  {Colors.DIM}  ... and {len(models) - 20} more. Use /model list {pname} <filter> to narrow down.{Colors.RESET}")
+                else:
+                    print(f"\n  {Colors.DIM}{pname}: No models available or provider not configured.{Colors.RESET}")
+            print()
+        else:
+            self._spinner.start(f"Fetching models from {provider_name}")
+            try:
+                models = await selector.list_models(provider_name, filter_text)
+            finally:
+                self._spinner.stop()
+
+            if not models:
+                print(f"  {Colors.YELLOW}No models found for {provider_name}. Is it configured?{Colors.RESET}\n")
+                return
+
+            show_pricing = provider_name == "openrouter"
+            print(f"\n  {Colors.BOLD}{provider_name.upper()}{Colors.RESET} — {len(models)} models:\n")
+            print(selector.format_model_table(models[:50], show_pricing=show_pricing))
+            if len(models) > 50:
+                print(f"\n  {Colors.DIM}Showing 50 of {len(models)}. Add a filter: /model list {provider_name} <search>{Colors.RESET}")
+            print()
+
+    async def _model_select(self, arg: str) -> None:
+        """Interactive model selection for a provider."""
+        selector = self._get_model_selector()
+        provider_name = arg.strip().lower()
+
+        if not provider_name:
+            print(f"  {Colors.YELLOW}Specify a provider: ollama, openai, anthropic, openrouter{Colors.RESET}\n")
+            return
+
+        self._spinner.start(f"Fetching {provider_name} models")
+        try:
+            models = await selector.list_models(provider_name)
+        finally:
+            self._spinner.stop()
+
+        if not models:
+            print(f"  {Colors.YELLOW}No models available from {provider_name}.{Colors.RESET}\n")
+            return
+
+        print(f"\n  {Colors.BOLD}Select a model from {provider_name}:{Colors.RESET}\n")
+        print(selector.format_model_table(models[:30], numbered=True))
+        if len(models) > 30:
+            print(f"  {Colors.DIM}  ... showing 30 of {len(models)}{Colors.RESET}")
+
+        print(f"\n  {Colors.DIM}Enter number, model name, or 'cancel':{Colors.RESET}")
+        try:
+            choice = input(f"  {Colors.BOLD}Select ▸ {Colors.RESET}").strip()
+        except (EOFError, KeyboardInterrupt):
+            print(f"\n  {Colors.DIM}Cancelled.{Colors.RESET}\n")
+            return
+
+        if not choice or choice.lower() == "cancel":
+            print(f"  {Colors.DIM}Cancelled.{Colors.RESET}\n")
+            return
+
+        # Resolve selection
+        selected_model = None
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(models):
+                selected_model = models[idx]
+        else:
+            # Search by name/id
+            for m in models:
+                if choice.lower() in m.id.lower() or choice.lower() in m.name.lower():
+                    selected_model = m
+                    break
+
+        if not selected_model:
+            print(f"  {Colors.RED}No model matching '{choice}'.{Colors.RESET}\n")
+            return
+
+        # Apply selection
+        self._apply_model_switch(provider_name, selected_model.id)
+        print(f"  {Colors.GREEN}✓ Switched to {provider_name}/{selected_model.id}{Colors.RESET}\n")
+
+    async def _model_test(self, arg: str) -> None:
+        """Test a specific model."""
+        selector = self._get_model_selector()
+        parts = arg.strip().split(None, 1)
+
+        if len(parts) < 2:
+            print(f"  {Colors.YELLOW}Usage: /model test <provider> <model_id>{Colors.RESET}\n")
+            return
+
+        provider_name = parts[0].lower()
+        model_id = parts[1]
+
+        self._spinner.start(f"Testing {provider_name}/{model_id}")
+        try:
+            result = await selector.test_model(provider_name, model_id)
+        finally:
+            self._spinner.stop()
+
+        if result.success:
+            print(f"\n  {Colors.GREEN}✅ Model test passed!{Colors.RESET}")
+            print(f"  {Colors.BOLD}Latency:{Colors.RESET} {result.latency_ms:.0f}ms")
+            if result.output_preview:
+                print(f"  {Colors.BOLD}Response:{Colors.RESET} {result.output_preview[:100]}")
+            if result.tokens_used:
+                in_t = result.tokens_used.get("input_tokens", 0)
+                out_t = result.tokens_used.get("output_tokens", 0)
+                print(f"  {Colors.BOLD}Tokens:{Colors.RESET} {in_t} in / {out_t} out")
+        else:
+            print(f"\n  {Colors.RED}❌ Model test failed{Colors.RESET}")
+            print(f"  {Colors.BOLD}Error:{Colors.RESET} {result.error}")
+            if result.latency_ms > 0:
+                print(f"  {Colors.BOLD}Latency:{Colors.RESET} {result.latency_ms:.0f}ms")
+        print()
+
+    def _model_popular(self, arg: str = "") -> None:
+        """Show popular/recommended models."""
+        provider_name = arg.strip().lower() if arg else ""
+
+        if provider_name and provider_name in ModelSelector.POPULAR_MODELS:
+            providers = {provider_name: ModelSelector.POPULAR_MODELS[provider_name]}
+        else:
+            providers = ModelSelector.POPULAR_MODELS
+
+        print(f"\n{Colors.BOLD}  Popular Models:{Colors.RESET}\n")
+        for pname, models in providers.items():
+            print(f"  {Colors.CYAN}{pname.upper()}:{Colors.RESET}")
+            for m in models:
+                print(f"    • {m}")
+            print()
+
+        print(f"  {Colors.DIM}Use: /model use <provider> <model> to switch{Colors.RESET}\n")
+
+    def _model_use(self, arg: str) -> None:
+        """Immediately switch to a specific provider/model."""
+        parts = arg.strip().split(None, 1)
+        if len(parts) < 2:
+            print(f"  {Colors.YELLOW}Usage: /model use <provider> <model_id>{Colors.RESET}")
+            print(f"  {Colors.DIM}Example: /model use anthropic claude-sonnet-4-5-20250929{Colors.RESET}\n")
+            return
+
+        provider_name = parts[0].lower()
+        model_id = parts[1]
+
+        if provider_name not in ProviderFactory._providers:
+            print(f"  {Colors.RED}Unknown provider '{provider_name}'. Available: {', '.join(ProviderFactory._providers.keys())}{Colors.RESET}\n")
+            return
+
+        self._apply_model_switch(provider_name, model_id)
+        print(f"  {Colors.GREEN}✓ Switched to {provider_name}/{model_id}{Colors.RESET}\n")
+
+    def _apply_model_switch(self, provider_name: str, model_id: str) -> None:
+        """
+        Actually switch the agent's provider and model at runtime.
+        Creates a new provider instance and hot-swaps it on the agent.
+        """
+        # Build config for new provider
+        pb = getattr(self.agent, "prompt_builder", None)
+        config_data = getattr(pb, "config", {}) if pb else {}
+        prov_config = config_data.get("providers", {}).get(provider_name, {})
+
+        old_provider = self.agent.provider
+
+        temp_config = {
+            "llm": {
+                "provider": provider_name,
+                "model": model_id,
+                "temperature": old_provider.temperature,
+                "max_tokens": old_provider.max_tokens,
+            },
+            "providers": {provider_name: prov_config},
+        }
+
+        try:
+            new_provider = ProviderFactory.create(temp_config)
+            self.agent.provider = new_provider
+            # Update config in prompt builder too
+            if pb:
+                pb.config.setdefault("llm", {})["provider"] = provider_name
+                pb.config.setdefault("llm", {})["model"] = model_id
+        except Exception as e:
+            print(f"  {Colors.RED}Failed to switch: {e}{Colors.RESET}")
 
     @staticmethod
     def _rl_prompt(text: str) -> str:
