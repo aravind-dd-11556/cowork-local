@@ -108,10 +108,11 @@ class TestSEC_CRITICAL2_RecursionBomb(unittest.TestCase):
         # Reset depth
         tt_module._current_depth = 0
 
-        # Create mock agent factory
+        # Create mock agent factory (Sprint 30: accepts keyword args)
         mock_agent = MagicMock()
         mock_agent.run = AsyncMock(return_value="done")
-        self.tool = TaskTool(agent_factory=lambda: mock_agent)
+        mock_agent._messages = []
+        self.tool = TaskTool(agent_factory=lambda **kw: mock_agent)
 
     def tearDown(self):
         self.tt_module._current_depth = 0
@@ -140,7 +141,8 @@ class TestSEC_CRITICAL2_RecursionBomb(unittest.TestCase):
 
         mock_agent = MagicMock()
         mock_agent.run = AsyncMock(side_effect=RuntimeError("boom"))
-        tool = TaskTool(agent_factory=lambda: mock_agent)
+        mock_agent._messages = []
+        tool = TaskTool(agent_factory=lambda **kw: mock_agent)
 
         initial = self.tt_module._current_depth
         result = run(tool.execute(description="test", prompt="fail", tool_id="t1"))

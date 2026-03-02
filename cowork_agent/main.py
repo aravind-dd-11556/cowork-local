@@ -1215,25 +1215,60 @@ def main() -> None:
     except Exception as e:
         logger.debug(f"Skill tool not available: {e}")
 
-    # Register Task tool (subagent delegation)
+    # ── Sprint 30: Task Tool with Agent Types, Worktree Isolation, Resume ──
     from .tools.task_tool import TaskTool
 
-    def _create_subagent():
-        """Factory for creating fresh subagent instances."""
+    def _create_subagent(
+        tool_filter=None,
+        system_instructions="",
+        max_iterations=10,
+        workspace_dir=None,
+    ):
+        """Factory for creating fresh subagent instances.
+
+        Sprint 30: Accepts optional constraints from agent type profiles.
+        Args:
+            tool_filter: Callable that filters available tool names list.
+            system_instructions: Extra system prompt for the subagent.
+            max_iterations: Max iterations for the subagent loop.
+            workspace_dir: Override workspace directory (for worktree isolation).
+        """
         sub_registry = ToolRegistry()
         register_tools(sub_registry, config)
+
+        # Sprint 30: Apply tool filter from agent type profile
+        if tool_filter is not None:
+            all_names = sub_registry.tool_names
+            allowed = tool_filter(all_names)
+            removed = set(all_names) - set(allowed)
+            for tool_name in removed:
+                sub_registry.unregister(tool_name)
+
         sub_builder = PromptBuilder(config._data, skill_registry=skill_registry)
+        ws = workspace_dir or workspace
         return Agent(
             provider=provider,
             registry=sub_registry,
             prompt_builder=sub_builder,
-            max_iterations=10,
-            workspace_dir=workspace,
+            max_iterations=max_iterations,
+            workspace_dir=ws,
             max_context_tokens=config.get("llm.max_tokens", 32000) * 2,
             skill_registry=skill_registry,
         )
 
-    registry.register(TaskTool(agent_factory=_create_subagent))
+    # Sprint 30: Wire worktree manager for isolation support
+    _worktree_mgr = None
+    try:
+        from .core.worktree import WorktreeManager
+        _worktree_mgr = WorktreeManager(workspace_dir=workspace)
+    except Exception:
+        logger.debug("WorktreeManager not available for task isolation")
+
+    registry.register(TaskTool(
+        agent_factory=_create_subagent,
+        worktree_manager=_worktree_mgr,
+        workspace_dir=workspace,
+    ))
 
     # ── Sprint 10: Interface Mode Selection ─────────────────────────
     mode = getattr(args, "mode", "cli")
