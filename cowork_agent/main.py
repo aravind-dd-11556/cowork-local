@@ -1167,6 +1167,25 @@ def main() -> None:
     except Exception as e:
         logger.debug(f"Context priority scoring not available: {e}")
 
+    # ── Sprint 28: Adaptive Tool Chaining ─────────────────────────────
+
+    try:
+        ac_cfg = config.get("adaptive_chain", {})
+        if ac_cfg.get("enabled", True):
+            from .core.adaptive_chain import AdaptiveChainExecutor
+            from .tools.chain_tool import ChainTool
+            chain_executor = AdaptiveChainExecutor(
+                tool_registry=registry,
+                reflection_engine=getattr(agent, 'reflection_engine', None),
+                rollback_journal=getattr(agent, 'rollback_journal', None),
+                execution_tracer=getattr(agent, 'execution_tracer', None),
+            )
+            agent.adaptive_chain_executor = chain_executor
+            registry.register(ChainTool(executor=chain_executor))
+            logger.info("Adaptive tool chaining enabled")
+    except Exception as e:
+        logger.debug(f"Adaptive tool chaining not available: {e}")
+
     # Register Task tool (subagent delegation)
     from .tools.task_tool import TaskTool
 
