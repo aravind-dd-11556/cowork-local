@@ -141,6 +141,9 @@ class Agent:
         # Sprint 28: Adaptive Tool Chaining (set by main.py)
         self.adaptive_chain_executor = None  # AdaptiveChainExecutor instance
 
+        # Sprint 29: Skill-before-work enforcement
+        self._skill_enforcement_enabled = True  # enforce skill reading before work
+
         # Callbacks for UI updates
         self.on_tool_start = on_tool_start
         self.on_tool_end = on_tool_end
@@ -1541,6 +1544,14 @@ class Agent:
                 if matched:
                     ctx["active_skills"] = matched
                     logger.info(f"Matched skills: {[s.name for s in matched]}")
+                    # Sprint 29: Skill-before-work enforcement
+                    if self._skill_enforcement_enabled:
+                        names = ", ".join(s.name for s in matched)
+                        ctx["skill_enforcement_hint"] = (
+                            f"IMPORTANT: Before starting this task, invoke the "
+                            f"'skill' tool with skill='{matched[0].name}' to load "
+                            f"specialized instructions. Matched skills: {names}."
+                        )
 
         return ctx
 

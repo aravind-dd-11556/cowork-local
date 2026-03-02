@@ -1186,6 +1186,35 @@ def main() -> None:
     except Exception as e:
         logger.debug(f"Adaptive tool chaining not available: {e}")
 
+    # ── Sprint 29: Skill Tool + Skill Content ──────────────────────────
+
+    try:
+        sk_cfg = config.get("skill_tool", {})
+        if sk_cfg.get("enabled", True):
+            from .tools.skill_tool import SkillTool
+
+            skill_tool = SkillTool(skill_registry=skill_registry)
+            registry.register(skill_tool)
+
+            # Configure enforcement
+            enforce = sk_cfg.get("enforce_before_work", True)
+            agent._skill_enforcement_enabled = enforce
+
+            # Ensure skills are discovered from built-in skills/ directory
+            import os
+            builtin_skills_dir = os.path.join(
+                os.path.dirname(__file__), "skills"
+            )
+            if os.path.isdir(builtin_skills_dir) and skill_registry:
+                skill_registry._scan_directory(builtin_skills_dir)
+                logger.info(
+                    f"Scanned built-in skills: {skill_registry.skill_names}"
+                )
+
+            logger.info("Skill tool registered with enforcement=%s", enforce)
+    except Exception as e:
+        logger.debug(f"Skill tool not available: {e}")
+
     # Register Task tool (subagent delegation)
     from .tools.task_tool import TaskTool
 

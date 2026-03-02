@@ -131,10 +131,17 @@ class PromptBuilder:
             f"Model: {model}",
             f"Provider: {provider}",
             f"Workspace: {self.workspace_dir}",
+            # Sprint 29: Folder-selected status (mirrors real Cowork)
+            f"User selected a folder: {'yes' if self.workspace_dir else 'no'}",
         ]
 
         if context.get("iteration"):
             lines.append(f"Agent iteration: {context['iteration']} of 15")
+
+        # Sprint 29: Skill enforcement hint
+        hint = context.get("skill_enforcement_hint", "")
+        if hint:
+            lines.append(f"Skill hint: {hint}")
 
         lines.append("</env>")
         return "\n".join(lines)
