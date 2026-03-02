@@ -1246,6 +1246,31 @@ def main() -> None:
     except Exception as e:
         logger.debug(f"MCP Registry tools not available: {e}")
 
+    # ── Sprint 32: File Management + Artifact System ────────────────────
+    try:
+        fm_cfg = config.get("file_management", {})
+        if fm_cfg.get("enabled", True):
+            from .tools.file_management_tools import (
+                RequestCoworkDirectoryTool,
+                AllowCoworkFileDeleteTool,
+                PresentFilesTool,
+            )
+            from .core.artifact_system import ArtifactSystem
+
+            # Create artifact system
+            session_dir = os.path.dirname(workspace) if workspace else ""
+            artifact_system = ArtifactSystem(
+                workspace_dir=workspace,
+                session_dir=session_dir,
+            )
+
+            registry.register(RequestCoworkDirectoryTool(workspace_dir=workspace))
+            registry.register(AllowCoworkFileDeleteTool())
+            registry.register(PresentFilesTool(workspace_dir=workspace))
+            logger.info("File management tools + artifact system registered")
+    except Exception as e:
+        logger.debug(f"File management tools not available: {e}")
+
     # ── Sprint 30: Task Tool with Agent Types, Worktree Isolation, Resume ──
     from .tools.task_tool import TaskTool
 
