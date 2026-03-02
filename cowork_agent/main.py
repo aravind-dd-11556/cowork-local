@@ -1271,6 +1271,38 @@ def main() -> None:
     except Exception as e:
         logger.debug(f"File management tools not available: {e}")
 
+    # ── Sprint 33: Browser Automation Core ─────────────────────────────
+    try:
+        browser_cfg = config.get("browser_automation", {})
+        if browser_cfg.get("enabled", True):
+            from .core.browser_session import BrowserSession
+            from .tools.browser_tools import (
+                TabsContextTool,
+                TabsCreateTool,
+                NavigateTool,
+                ReadPageTool,
+                FindElementTool,
+                FormInputTool,
+                ComputerTool,
+            )
+
+            viewport_w = browser_cfg.get("viewport_width", 1280)
+            viewport_h = browser_cfg.get("viewport_height", 900)
+            browser_session = BrowserSession(
+                default_viewport=(viewport_w, viewport_h),
+            )
+
+            registry.register(TabsContextTool(browser_session=browser_session))
+            registry.register(TabsCreateTool(browser_session=browser_session))
+            registry.register(NavigateTool(browser_session=browser_session))
+            registry.register(ReadPageTool(browser_session=browser_session))
+            registry.register(FindElementTool(browser_session=browser_session))
+            registry.register(FormInputTool(browser_session=browser_session))
+            registry.register(ComputerTool(browser_session=browser_session))
+            logger.info("Browser automation tools registered (7 core tools)")
+    except Exception as e:
+        logger.debug(f"Browser automation tools not available: {e}")
+
     # ── Sprint 30: Task Tool with Agent Types, Worktree Isolation, Resume ──
     from .tools.task_tool import TaskTool
 
