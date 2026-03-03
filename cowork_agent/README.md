@@ -1,6 +1,6 @@
 # Cowork Agent
 
-A modular AI agent framework inspired by Anthropic's Cowork mode — built with configurable LLM providers, a rich tool ecosystem, multi-agent orchestration, and an interactive CLI. Developed across 22 sprints with 2,261 tests covering every subsystem.
+A modular AI agent framework inspired by Anthropic's Cowork mode — built with configurable LLM providers, a rich tool ecosystem, multi-agent orchestration, browser automation, CRM integration, and an interactive CLI. Developed across 43 sprints with 4,727 tests covering every subsystem.
 
 ## Quick Start
 
@@ -11,6 +11,7 @@ A modular AI agent framework inspired by Anthropic's Cowork mode — built with 
   - **Ollama** (default, free, local) — [install guide](https://ollama.com/download)
   - **OpenAI API** — requires `OPENAI_API_KEY`
   - **Anthropic API** — requires `ANTHROPIC_API_KEY`
+  - **OpenRouter API** — requires `OPENROUTER_API_KEY` (200+ models via one endpoint)
 
 ### 2. Install Dependencies
 
@@ -80,28 +81,68 @@ export COWORK_LLM_MODEL="openai/gpt-4o"                  # or
 export COWORK_LLM_MODEL="meta-llama/llama-3.1-70b-instruct"
 ```
 
-### 4. Set Up Web Search (Before Launching the Agent)
+### 4. Set Up Web Search & Fetch (Optional)
 
-The agent includes web search and URL fetch tools powered by SearXNG (search engine) and Ollama (content processing). These are optional — the agent works fine without them — but if you want web search capabilities, complete these steps **before** launching the agent.
+The agent includes two web tools powered by external services:
+
+- **`web_search`** — requires **SearXNG** (self-hosted metasearch engine)
+- **`web_fetch`** — requires **Ollama** (local LLM for content processing) + Python libraries
+
+These are optional — the agent works fine without them. If they're not running at startup, those tools are simply unavailable while everything else works normally.
+
+#### Option A: Start SearXNG Only (for `web_search`)
+
+If you only need web search and already have Ollama running separately:
 
 ```bash
-# 1. Install web tool dependencies
-pip install trafilatura markdownify beautifulsoup4 lxml
+# From the project root
+cd cowork_agent/sandbox
 
-# 2. Start SearXNG (search backend)
-cd cowork_agent/vendor/claude_web_tools
-docker-compose up -d   # or: podman-compose up -d
-cd ../../..
+# Start SearXNG using Podman Compose (or Docker Compose)
+podman-compose up -d searxng    # starts only the SearXNG service
+# Or: docker-compose up -d searxng
 
-# 3. Make sure Ollama is running (used for content processing)
-ollama serve
+# Verify it's running
+curl http://localhost:8888/search?q=test&format=json
+```
 
-# 4. Verify both services are reachable
+#### Option B: Start All Services (SearXNG + Ollama + Agent Container)
+
+The `sandbox/compose.yml` file defines a full stack with three services:
+
+```bash
+cd cowork_agent/sandbox
+
+# Start everything: Ollama, SearXNG, and the Agent container
+podman-compose up -d
+# Or: docker-compose up -d
+
+# Verify services
 curl http://localhost:8888/search?q=test&format=json   # SearXNG
 curl http://localhost:11434/api/tags                     # Ollama
 ```
 
-Environment variables for web tools:
+The compose file is at `cowork_agent/sandbox/compose.yml` and the SearXNG configuration is at `cowork_agent/sandbox/searxng-config/settings.yml`.
+
+#### Option C: Run SearXNG Standalone (Without Compose)
+
+```bash
+podman run -d --name cowork-searxng \
+  -p 8888:8080 \
+  -v ./cowork_agent/sandbox/searxng-config:/etc/searxng:Z \
+  -e SEARXNG_BASE_URL=http://localhost:8888/ \
+  docker.io/searxng/searxng:latest
+```
+
+#### Python Dependencies for Web Fetch
+
+The `web_fetch` tool also needs these Python libraries (for HTML→Markdown conversion):
+
+```bash
+pip install trafilatura markdownify beautifulsoup4 lxml
+```
+
+#### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -111,7 +152,14 @@ Environment variables for web tools:
 | `FETCH_TIMEOUT` | `30` | HTTP fetch timeout (seconds) |
 | `CACHE_TTL_SECONDS` | `900` | URL cache duration (15 min) |
 
-If SearXNG or Ollama are not running when the agent starts, the `web_search` and `web_fetch` tools will simply be unavailable — other tools will work normally.
+#### How It Works
+
+```
+web_search:  User query → SearXNG API → Parsed results → Agent
+web_fetch:   URL → HTTP fetch → HTML→Markdown → Ollama LLM processing → Agent
+```
+
+The `web_fetch` tool uses a two-stage pipeline: Stage 1 fetches the URL and converts HTML to Markdown (via trafilatura/markdownify/BeautifulSoup), Stage 2 sends the Markdown + user prompt to a local Ollama model for focused extraction. Results are cached for 15 minutes.
 
 ### 5. Run the Agent
 
@@ -124,6 +172,12 @@ python -m cowork_agent --provider openai --model gpt-4o --workspace ~/my-project
 python -m cowork_agent -v        # verbose (INFO logs)
 python -m cowork_agent -vv       # debug (DEBUG logs)
 python -m cowork_agent -c my_config.yaml  # custom config file
+
+# Model discovery CLI flags (no interactive session needed)
+python -m cowork_agent --list-models              # List models from all providers
+python -m cowork_agent --list-models openai        # List models from one provider
+python -m cowork_agent --test-model anthropic claude-sonnet-4-5-20250929  # Test connectivity
+python -m cowork_agent --model-status              # Check which providers are available
 ```
 
 On first run, the agent will ask you to pick a workspace directory — this is where it reads/writes files.
@@ -140,6 +194,10 @@ On first run, the agent will ask you to pick a workspace directory — this is w
 You: Can you read my project files and summarize what this codebase does?
 
 You: Create a Python script that fetches weather data and saves it to weather.json
+
+You: /model status
+You: /model list anthropic
+You: /model use openai gpt-4o
 
 You: /help
 ```
@@ -236,6 +294,13 @@ The Slack bot features progressive streaming — responses build in real-time wi
 | `/snapshots` | List saved snapshots |
 | `/metrics` | Show tool execution metrics |
 | `/analytics` | Show usage analytics |
+| `/model status` | Show provider availability (API keys, Ollama running status) |
+| `/model current` | Show active provider and model |
+| `/model list [provider]` | List available models (all providers or a specific one) |
+| `/model select [provider]` | Interactive numbered model selection |
+| `/model test <provider> <model>` | Test a model connection and measure latency |
+| `/model use <provider> <model>` | Hot-swap to a different model at runtime |
+| `/model popular [provider]` | Show recommended models per provider |
 | `/rc start api` | Start REST API service (remote control) |
 | `/rc start telegram` | Start Telegram bot |
 | `/rc start slack` | Start Slack bot |
@@ -246,7 +311,7 @@ The Slack bot features progressive streaming — responses build in real-time wi
 
 ## Sprint Overview
 
-The framework was built across 22 sprints, each adding a major subsystem. Here is what each sprint covers:
+The framework was built across 43 sprints, each adding a major subsystem. Here is what each sprint covers:
 
 ### Core Agent (Sprints 1–5)
 
@@ -266,19 +331,14 @@ The framework was built across 22 sprints, each adding a major subsystem. Here i
 | 7 | **Persistence & State** | Agent session manager (create/resume sessions), conversation store (search, export, prune), token usage store (budgets, cost tracking, alerts), hybrid response cache (memory + disk spill), state snapshot manager (point-in-time capture and restore) |
 | 8 | **Cross-Theme Hardening** | Output sanitizer (masks AWS keys, JWTs, DB URIs, passwords), metrics collector (per-tool/provider performance tracking with percentiles), execution tracer (hierarchical spans with parent-child relationships), tool permission manager (profiles: full_access, read_only, safe_mode with quotas), rich terminal output (tables, progress bars, formatted errors) |
 
-### Intelligence & Interfaces (Sprints 9–11)
+### Intelligence & Interfaces (Sprints 9–12)
 
 | Sprint | Feature | Description |
 |--------|---------|-------------|
 | 9 | **Multi-Provider Intelligence** | Model router (task complexity → tier selection: FAST/BALANCED/POWERFUL), cost tracker (per-model pricing, budget enforcement), provider health tracker (EWMA scoring, rankings), provider pool (tier-based provider management), usage analytics (routing decisions, efficiency scoring, recommendations) |
 | 10 | **Remote Control Interfaces** | REST API with FastAPI (sessions, chat, streaming), WebSocket for real-time bidirectional streaming, Telegram bot adapter, Slack bot adapter with interactive buttons, remote control CLI commands (/rc start/stop/status), web dashboard HTML serving |
 | 11 | **Advanced Memory System** | Conversation summarizer (rule-based compression), knowledge store (category-based persistent facts), memory tool (user-accessible store/retrieve/search), context manager with knowledge scoring and proactive pruning, memory-aware prompt building |
-
-### System Integration (Sprint 12)
-
-| Sprint | Feature | Description |
-|--------|---------|-------------|
-| 12 | **Wiring All Modules** | Full integration of response cache, stream hardener, multimodal support, notebook editing, scheduler, worktree, plugin system, MCP client, context bus, agent registry, supervisor, and delegate tool into the main agent loop |
+| 12 | **System Integration** | Full integration of response cache, stream hardener, multimodal support, notebook editing, scheduler, worktree, plugin system, MCP client, context bus, agent registry, supervisor, and delegate tool into the main agent loop |
 
 ### Resilience & Streaming (Sprints 13–14)
 
@@ -314,6 +374,57 @@ The framework was built across 22 sprints, each adding a major subsystem. Here i
 |--------|---------|-------------|
 | 21 | **Multi-Agent Enhancement** | Supervisor strategies (MapReduce, Debate, Voting, Sequential, Parallel), agent specialization with keyword matching, conversation router (task analysis and intelligent delegation), agent pool with auto-scaling and health-aware selection |
 | 22 | **End-to-End Integration Tests** | 192 tests across 9 suites: basic agent loop, multi-turn context, tool pipeline, error recovery, multi-agent orchestration, streaming, security pipeline, observability, and full realistic workflow scenarios |
+
+### Enterprise Security (Sprints 23–26)
+
+| Sprint | Feature | Description |
+|--------|---------|-------------|
+| 23 | **Anthropic-Grade Security Pipeline** | 7-layer security validation (instruction detection, consent management, trust context, privacy guard, credential detection, prompt injection detection, input sanitization), security freeze capability, invariant enforcement |
+| 24 | **Production Hardening** | Action classifier (prohibited/explicit-permission/regular actions), approval workflow for sensitive operations, enhanced action type enforcement |
+| 25 | **Immutable Security** | Security invariant enforcement, immutable rule engine, scheduler activation with security validation |
+| 26 | **Module Wiring Completion** | Full integration of Sprint 21 modules (specialization, routing, pool, conflict resolver, strategies) into the running agent |
+
+### Tier 2 Features (Sprints 27–32)
+
+| Sprint | Feature | Description |
+|--------|---------|-------------|
+| 27 | **Differentiating Features** | Reflection engine (learning from past executions), cost optimizer (budget-aware model selection), rollback journal (safe undo for tool operations) |
+| 28 | **Adaptive Tool Chaining** | Chain planning from goal keywords, template matching (file_creation, code_fix, research, refactor, data_pipeline), automatic retry with fallback tools, mid-chain adaptation on failure |
+| 29 | **Skill System** | Skill tool for invoking skills, skill content loading, skill-before-work enforcement to ensure skills are read before code generation |
+| 30 | **Task Tool Enhancement** | Agent types (Bash, Explore, Plan, general-purpose), worktree isolation for safe parallel work, resume capability for continuing previous agent sessions |
+| 31 | **MCP Registry & Marketplace** | Connector registry (searchable catalog of MCP connectors), plugin marketplace (discover, install, manage plugins), suggest_connectors for user recommendations |
+| 32 | **File Management & Artifacts** | File management tools (copy, move, create directories, zip/unzip), artifact system (track and manage generated files with metadata) |
+
+### Browser & CRM (Sprints 33–36)
+
+| Sprint | Feature | Description |
+|--------|---------|-------------|
+| 33 | **Browser Automation Core** | Browser session manager (Playwright integration), page navigation, clicking, typing, scrolling, screenshots, DOM reading with accessibility tree, element finding, JavaScript execution, form filling |
+| 34 | **Browser Extended** | Tab management (create, switch, close), cookie management (get, set, delete), network request monitoring, console message reading |
+| 35 | **Browser Extras** | Drag-and-drop support, file upload, advanced screenshot regions, element hover, resize window, GIF recording |
+| 36 | **CRM Integration** | Zoho CRM tools (search, create, update, delete, upsert records; add/remove tags; assign/remove territories; manage custom layouts) |
+
+### System Prompt & Model Selection (Sprints 37–38)
+
+| Sprint | Feature | Description |
+|--------|---------|-------------|
+| 37 | **Faithful System Prompt** | Anthropic-faithful behavioral rules (tone, formatting, refusal handling, legal/financial caveats, copyright, evenhandedness, user wellbeing), prompt builder integration, 333 tests for rule compliance |
+| 38 | **Interactive Model Selector** | Multi-provider model discovery (Ollama, OpenAI, Anthropic, OpenRouter), `/model` CLI command with subcommands (status, list, select, test, use, popular), `--list-models`/`--test-model`/`--model-status` CLI flags, hot-swap provider switching at runtime, model test with latency measurement |
+
+### Web Tools & Containerization (Sprint 39)
+
+| Sprint | Feature | Description |
+|--------|---------|-------------|
+| 39 | **Web Search & Fetch + Sandbox** | SearXNG-powered web search, two-stage WebFetch pipeline (HTML→Markdown→LLM processing), 15-minute TTL cache, SSRF protection, Podman Containerfile and compose.yml for running Ollama + SearXNG + Agent as a stack |
+
+### Differentiating Features (Sprints 40–43)
+
+| Sprint | Feature | Description |
+|--------|---------|-------------|
+| 40 | **Self-Healing Pipelines** | Automatic failure diagnosis and recovery — when a tool fails, the engine diagnoses the root cause, selects a recovery strategy (retry with modified params, use alternative tool, rollback, degrade, or escalate), and only asks the user when genuinely stuck |
+| 41 | **Cross-Session Task Continuity** | Pause/resume long-running tasks across sessions with serialized execution state. Persistent task queue with priority and dependency resolution, checkpoint manager for incremental progress saving, `/pause`, `/resume`, `/tasks` CLI commands |
+| 42 | **Live Workspace Awareness** | Background file monitoring with proactive issue detection — pure asyncio polling-based file watcher, workspace analyzer (JSON/YAML/Python syntax errors, merge conflicts, large files), suggestion engine, git monitor (branch switches, commits, unstaged changes, stash tracking) |
+| 43 | **Multi-Agent Crew Mode** | Specialized sub-agents (researcher, coder, reviewer, tester, planner) collaborate on complex tasks via a coordinator. Template-based task decomposition, role assignment with keyword matching, 4 result aggregation strategies (concatenate, merge, best_of, consensus), 3 execution strategies (sequential, parallel, pipeline) |
 
 ## Project Structure
 
@@ -436,6 +547,60 @@ cowork_agent/
 │   ├── conversation_router.py      # Intelligent task delegation
 │   ├── agent_pool.py               # Auto-scaling agent pool
 │   │
+│   │  # Sprint 23-25 — Enterprise Security
+│   ├── security_pipeline.py        # 7-layer security validation
+│   ├── instruction_detector.py     # Untrusted content verification
+│   ├── consent_manager.py          # User consent tracking
+│   ├── trust_context.py            # Trust level management
+│   ├── privacy_guard.py            # Sensitive data protection
+│   ├── security_freeze.py          # Emergency security lockdown
+│   ├── security_invariants.py      # Immutable security rules
+│   ├── action_classifier.py        # Prohibited/permission/regular actions
+│   ├── approval_workflow.py        # Sensitive action approval flow
+│   │
+│   │  # Sprint 27 — Tier 2 Features
+│   ├── reflection_engine.py        # Learning from past executions
+│   ├── cost_optimizer.py           # Budget-aware model selection
+│   ├── rollback_journal.py         # Safe undo for tool operations
+│   │
+│   │  # Sprint 28 — Adaptive Chaining
+│   ├── adaptive_chain.py           # Tool chain planning and execution
+│   │
+│   │  # Sprint 31 — MCP Registry
+│   ├── connector_registry.py       # MCP connector/plugin catalog
+│   │
+│   │  # Sprint 32 — Artifacts
+│   ├── artifact_system.py          # Generated file management
+│   ├── tool_output_validator.py    # Output schema validation
+│   │
+│   │  # Sprint 33 — Browser Automation
+│   ├── browser_session.py          # Playwright browser session manager
+│   │
+│   │  # Sprint 38 — Model Selection
+│   ├── model_selector.py           # Multi-provider model discovery & selection
+│   │
+│   │  # Sprint 40 — Self-Healing
+│   ├── self_healing.py             # Recovery engine (execute → diagnose → recover)
+│   ├── failure_diagnosis.py        # Root cause analysis and parameter suggestions
+│   ├── recovery_strategies.py      # Recovery action decision tree
+│   │
+│   │  # Sprint 41 — Task Continuity
+│   ├── task_continuity.py          # Pause/resume tasks across sessions
+│   ├── task_queue.py               # Persistent priority task queue
+│   ├── checkpoint_manager.py       # Incremental progress checkpoints
+│   │
+│   │  # Sprint 42 — Workspace Awareness
+│   ├── file_watcher.py             # Background file change monitoring
+│   ├── workspace_analyzer.py       # File issue detection (syntax, merge conflicts)
+│   ├── proactive_suggestions.py    # Auto-suggestions for detected issues
+│   ├── git_monitor.py              # Git state change tracking
+│   │
+│   │  # Sprint 43 — Crew Mode
+│   ├── crew.py                     # Multi-agent crew orchestration
+│   ├── crew_roles.py               # Predefined roles (researcher, coder, etc.)
+│   ├── task_decomposer.py          # Task→sub-task decomposition
+│   ├── result_aggregator.py        # Multi-agent result aggregation
+│   │
 │   └── providers/
 │       ├── base.py                 # BaseLLMProvider interface + factory
 │       ├── ollama.py               # Ollama provider (local LLMs)
@@ -456,15 +621,25 @@ cowork_agent/
 │   ├── web_search.py               # Web search via SearXNG
 │   ├── notebook_edit.py            # Jupyter notebook editing
 │   ├── plan_tools.py               # Plan mode enter/exit
-│   ├── task_tool.py                # Subagent delegation
+│   ├── task_tool.py                # Subagent delegation (with agent types + resume)
 │   ├── scheduler_tools.py          # Scheduled task CRUD
+│   ├── scheduler_tools_ext.py      # Extended scheduler operations
 │   ├── mcp_bridge.py               # MCP tool bridge
+│   ├── mcp_registry_tools.py       # MCP connector search + suggest
 │   ├── worktree_tool.py            # Git worktree tools
 │   ├── git_tools.py                # Git status/diff/commit/branch/log
-│   └── memory_tool.py              # Knowledge store/retrieve/search
+│   ├── memory_tool.py              # Knowledge store/retrieve/search
+│   ├── chain_tool.py               # Adaptive tool chaining
+│   ├── skill_tool.py               # Skill invocation
+│   ├── generate_tool.py            # Dynamic tool generation
+│   ├── file_management_tools.py    # Copy, move, mkdir, zip/unzip
+│   ├── browser_tools.py            # Browser automation core (13 tools)
+│   ├── browser_tools_ext.py        # Browser extended (tabs, cookies, network)
+│   ├── browser_tools_extra.py      # Browser extras (drag-drop, console, GIF)
+│   └── crm_tools.py                # Zoho CRM integration tools
 ├── interfaces/
 │   ├── base.py                     # Abstract interface contract
-│   ├── cli.py                      # Interactive terminal chat
+│   ├── cli.py                      # Interactive terminal chat + /model + /rc
 │   ├── api.py                      # REST API + WebSocket (FastAPI)
 │   ├── telegram_bot.py             # Telegram bot adapter
 │   ├── slack_bot.py                # Slack bot adapter
@@ -473,7 +648,7 @@ cowork_agent/
 │       ├── dashboard.html          # Main chat web dashboard
 │       └── observability_dashboard.html  # Observability dashboard
 ├── prompts/
-│   └── behavioral_rules.py        # System prompt behavioral rules
+│   └── behavioral_rules.py        # Anthropic-faithful system prompt rules
 ├── vendor/
 │   └── claude_web_tools/           # Web search & fetch backend
 │       ├── web_search.py           # SearXNG search client
@@ -483,7 +658,7 @@ cowork_agent/
 │       ├── cache.py                # 15-minute TTL cache
 │       ├── config.py               # Web tools configuration
 │       └── models.py               # SearchResult, FetchResult models
-├── tests/                          # 2,261 tests across 22 sprints
+├── tests/                          # 4,727 tests across 43 sprints
 │   ├── test_p1.py                  # Sprint 1: Streaming & resilience (66)
 │   ├── test_p2.py                  # Sprint 2: Skills, plugins, MCP (56)
 │   ├── test_p3.py                  # Sprint 3: User interaction tools (49)
@@ -507,9 +682,36 @@ cowork_agent/
 │   ├── test_p20.py                 # Sprint 20: Observability dashboard (96)
 │   ├── test_p21.py                 # Sprint 21: Multi-agent enhancement (104)
 │   ├── test_p22.py                 # Sprint 22: E2E integration tests (192)
+│   ├── test_p23.py                 # Sprint 23: Security pipeline (166)
+│   ├── test_p24.py                 # Sprint 24: Production hardening (123)
+│   ├── test_p25.py                 # Sprint 25: Immutable security (120)
+│   ├── test_p26.py                 # Sprint 26: Module wiring (50)
+│   ├── test_p27.py                 # Sprint 27: Tier 2 features (113)
+│   ├── test_p28.py                 # Sprint 28: Adaptive chaining (150)
+│   ├── test_p29.py                 # Sprint 29: Skill system (166)
+│   ├── test_p30.py                 # Sprint 30: Task tool enhancement (85)
+│   ├── test_p31.py                 # Sprint 31: MCP registry (92)
+│   ├── test_p32.py                 # Sprint 32: File management (76)
+│   ├── test_p33.py                 # Sprint 33: Browser core (139)
+│   ├── test_p34.py                 # Sprint 34: Browser extended (76)
+│   ├── test_p35.py                 # Sprint 35: Browser extras (53)
+│   ├── test_p36.py                 # Sprint 36: CRM integration (72)
+│   ├── test_p37.py                 # Sprint 37: System prompt (123)
+│   ├── test_p37_edge.py            # Sprint 37: Edge cases (210)
+│   ├── test_p38_model_selector.py  # Sprint 38: Model selector (71)
+│   ├── test_p39_web_tools.py       # Sprint 39: Web search & fetch (100)
+│   ├── test_p40_self_healing.py    # Sprint 40: Self-healing pipelines (100)
+│   ├── test_p41_task_continuity.py # Sprint 41: Task continuity (100)
+│   ├── test_p42_file_watcher.py    # Sprint 42: File watcher & workspace (109)
+│   ├── test_p43_crew_mode.py       # Sprint 43: Multi-agent crew mode (95)
 │   ├── e2e_helpers.py              # E2E test helpers (MockLLMProvider, etc.)
 │   ├── test_qa_audit.py            # QA audit tests (42)
 │   └── test_security_audit.py      # Security audit tests (43)
+├── sandbox/
+│   ├── Containerfile                # Podman/Docker container image definition
+│   ├── compose.yml                  # Podman/Docker Compose (Ollama + SearXNG + Agent)
+│   └── searxng-config/
+│       └── settings.yml             # SearXNG search engine configuration
 ├── requirements.txt
 └── setup.py
 ```
@@ -519,19 +721,20 @@ cowork_agent/
 ```bash
 # From the project root (parent of cowork_agent/)
 
-# Run all tests with pytest (recommended, 2,261 tests)
+# Run all tests with pytest (recommended, 4,661 tests)
 python -m pytest cowork_agent/tests/ --ignore=cowork_agent/tests/test_p1.py -q
 
 # Run Sprint 1 tests separately (custom runner, 66 tests)
 python cowork_agent/tests/test_p1.py
 
 # Run a specific sprint
-python -m pytest cowork_agent/tests/test_p22.py -v
+python -m pytest cowork_agent/tests/test_p43_crew_mode.py -v
 
 # Run a specific test class
 python -m pytest cowork_agent/tests/test_p22.py::TestE2EFullScenarios -v
 
-# Total: 2,261 tests across 22 sprints
+# Full regression (all 4,727 tests)
+python cowork_agent/tests/test_p1.py && python -m pytest cowork_agent/tests/ --ignore=cowork_agent/tests/test_p1.py -q
 ```
 
 ## Configuration Reference
@@ -561,15 +764,17 @@ All settings can be set via `default_config.yaml`, a custom YAML file (`-c`), or
 ┌────────────────────────────▼─────────────────────────────────────────┐
 │                          Agent Loop                                   │
 │  PromptBuilder → LLM Provider → Parse Tool Calls → Execute Tools     │
-│  → Safety Check → Context Management → Token Tracking → Repeat       │
+│  → Safety Pipeline → Context Management → Token Tracking → Repeat    │
+│  Adaptive Chain │ Reflection Engine │ Rollback Journal │ Model Router │
 └──┬──────────┬──────────┬──────────┬──────────┬───────────────────────┘
    │          │          │          │          │
 ┌──▼────┐ ┌──▼──────┐ ┌─▼────────┐│  ┌───────▼──────────────────────┐
 │  LLM  │ │  Tool   │ │ Security ││  │   Multi-Agent Orchestration  │
 │Providers│ │Registry │ │ Pipeline ││  │  Supervisor, AgentPool,      │
-│Ollama/ │ │ 20+    │ │Sanitizer,││  │  Strategies (MapReduce,      │
-│OpenAI/ │ │ tools  │ │Injection,││  │  Debate, Voting), Router,    │
-│Anthropic│ │        │ │RateLimiter│  │  Specialization, ContextBus  │
+│Ollama/ │ │ 62     │ │7-layer   ││  │  Strategies (MapReduce,      │
+│OpenAI/ │ │ tools  │ │validation││  │  Debate, Voting), Router,    │
+│Anthropic│ │+browser│ │+privacy  ││  │  Specialization, ContextBus  │
+│OpenRouter│ │+CRM   │ │guard     ││  │                              │
 └─────────┘ └────────┘ └──────────┘│  └──────────────────────────────┘
                                    │
 ┌──────────────────────────────────▼───────────────────────────────────┐
@@ -578,6 +783,11 @@ All settings can be set via `default_config.yaml`, a custom YAML file (`-c`), or
 │  Observability (event bus, metrics, benchmarks, correlation IDs)     │
 │  Persistence (SQLite store, session manager, knowledge store)        │
 │  Streaming (events, cancellation, progress bars)                     │
+│  Browser Automation (Playwright sessions, DOM, screenshots)          │
 │  Web Dashboard (real-time metrics, health, audit, benchmarks)        │
 └──────────────────────────────────────────────────────────────────────┘
 ```
+
+## License
+
+MIT
