@@ -1,6 +1,6 @@
 # Cowork Agent
 
-A modular AI agent framework inspired by Anthropic's Cowork mode — built with configurable LLM providers, a rich tool ecosystem, multi-agent orchestration, browser automation, CRM integration, and an interactive CLI. Developed across 43 sprints with 4,727 tests covering every subsystem.
+A modular AI agent framework inspired by Anthropic's Cowork mode — built with configurable LLM providers, a rich tool ecosystem, multi-agent orchestration, browser automation, CRM integration, and an interactive CLI. Developed across 45 sprints with 4,916 tests covering every subsystem.
 
 ## Quick Start
 
@@ -426,6 +426,13 @@ The framework was built across 43 sprints, each adding a major subsystem. Here i
 | 42 | **Live Workspace Awareness** | Background file monitoring with proactive issue detection — pure asyncio polling-based file watcher, workspace analyzer (JSON/YAML/Python syntax errors, merge conflicts, large files), suggestion engine, git monitor (branch switches, commits, unstaged changes, stash tracking) |
 | 43 | **Multi-Agent Crew Mode** | Specialized sub-agents (researcher, coder, reviewer, tester, planner) collaborate on complex tasks via a coordinator. Template-based task decomposition, role assignment with keyword matching, 4 result aggregation strategies (concatenate, merge, best_of, consensus), 3 execution strategies (sequential, parallel, pipeline) |
 
+### Connector Auth & Security Hardening (Sprints 44–45)
+
+| Sprint | Feature | Description |
+|--------|---------|-------------|
+| 44 | **Connector Authentication** | Full connector auth framework — OAuth2 PKCE flow with state management, API token flow, environment variable flow. Credential store with encrypted persistence, connector registry with metadata, CLI `/connect`/`/disconnect`/`/connectors` commands, 5 connector tools (connect, disconnect, list, status, env) |
+| 45 | **Security Audit & Hardening** | Comprehensive security hardening of connector auth — Fernet encryption (AES-128-CBC) replacing base64 obfuscation, path traversal prevention via UUID sanitization, token validation (min/max length), secure token masking, OAuth state TTL (600s) with max-pending limits, log redaction, secure file deletion, CLI getpass + readline history scrubbing, legacy credential auto-upgrade |
+
 ## Project Structure
 
 ```
@@ -601,6 +608,9 @@ cowork_agent/
 │   ├── task_decomposer.py          # Task→sub-task decomposition
 │   ├── result_aggregator.py        # Multi-agent result aggregation
 │   │
+│   │  # Sprint 44–45 — Connector Auth & Security
+│   ├── connector_auth.py           # Credential store (Fernet), OAuth2 PKCE, token/env auth
+│   │
 │   └── providers/
 │       ├── base.py                 # BaseLLMProvider interface + factory
 │       ├── ollama.py               # Ollama provider (local LLMs)
@@ -636,7 +646,8 @@ cowork_agent/
 │   ├── browser_tools.py            # Browser automation core (13 tools)
 │   ├── browser_tools_ext.py        # Browser extended (tabs, cookies, network)
 │   ├── browser_tools_extra.py      # Browser extras (drag-drop, console, GIF)
-│   └── crm_tools.py                # Zoho CRM integration tools
+│   ├── crm_tools.py                # Zoho CRM integration tools
+│   └── connector_tools.py          # Connector auth tools (connect, disconnect, list, status)
 ├── interfaces/
 │   ├── base.py                     # Abstract interface contract
 │   ├── cli.py                      # Interactive terminal chat + /model + /rc

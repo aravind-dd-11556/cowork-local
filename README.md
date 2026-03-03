@@ -2,7 +2,7 @@
 
 A modular AI agent framework inspired by Anthropic's Cowork mode — built from the ground up with configurable LLM providers, a rich tool ecosystem, multi-agent orchestration, browser automation, CRM integration, and an interactive CLI.
 
-**4,727 tests** | **62 tools** | **43 development sprints** | **4 LLM providers** | **5 interface modes**
+**4,916 tests** | **62 tools** | **45 development sprints** | **4 LLM providers** | **5 interface modes**
 
 ---
 
@@ -54,6 +54,16 @@ A modular AI agent framework inspired by Anthropic's Cowork mode — built from 
 - Agent specialization with keyword matching and intelligent routing
 - Auto-scaling agent pool with health-aware selection
 - Conflict detection and resolution across concurrent agents
+
+### Connector Authentication & Security (Sprint 44–45)
+- Connector authentication framework with OAuth2 PKCE, API token, and environment variable flows
+- Credential store with Fernet encryption (AES-128-CBC), file permissions (0o600), secure deletion
+- Path traversal prevention via strict UUID sanitization
+- Token validation (min/max length, whitespace stripping) and secure masking
+- OAuth state management with TTL expiry (600s) and max-pending limits (20)
+- Log redaction — no token values ever logged
+- CLI credential protection with getpass and readline history scrubbing
+- Legacy credential auto-upgrade (base64 → Fernet encryption)
 
 ### Security & Safety (Sprint 23–25, 37)
 - Anthropic-grade security pipeline with 7-layer validation
@@ -433,9 +443,11 @@ All settings can be set via `default_config.yaml`, a custom YAML file (`-c`), or
 | 41 | Cross-session task continuity: pause/resume, task queue, checkpoints | 100 |
 | 42 | Live workspace awareness: file watcher, analyzer, suggestions, git monitor | 109 |
 | 43 | Multi-agent crew mode: roles, task decomposition, result aggregation | 95 |
+| 44 | Connector authentication: OAuth2 PKCE, API token, env var flows | 86 |
+| 45 | Security audit: Fernet encryption, path traversal, token validation | 103 |
 | QA | Quality assurance audit | 42 |
 | Security | Security audit and hardening | 43 |
-| **Total** | | **4,727** |
+| **Total** | | **4,916** |
 
 ---
 

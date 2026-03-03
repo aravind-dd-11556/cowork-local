@@ -261,7 +261,9 @@ class CLI:
             "/help", "/clear", "/history", "/todos", "/config",
             "/health", "/sessions", "/snapshot", "/snapshots",
             "/metrics", "/analytics", "/model",
-            "/remote-control", "/rc", "/exit",
+            "/remote-control", "/rc",
+            "/connect", "/disconnect", "/connectors",
+            "/exit",
         ]
         if text.startswith("/"):
             matches = [c for c in commands if c.startswith(text)]
@@ -357,6 +359,18 @@ class CLI:
             await self._handle_remote_control(arg)
             return True
 
+        elif command == "/connect":
+            await self._handle_connect(arg)
+            return True
+
+        elif command == "/disconnect":
+            await self._handle_disconnect(arg)
+            return True
+
+        elif command == "/connectors":
+            await self._handle_list_connectors(arg)
+            return True
+
         elif command in ("/exit", "/quit", "/q"):
             # Stop all remote services before exiting
             if self._remote_services:
@@ -384,6 +398,9 @@ class CLI:
   {Colors.CYAN}/model{Colors.RESET}     Model selection (list, select, test, info)
   {Colors.CYAN}/remote-control{Colors.RESET} Manage remote interfaces (API, Telegram, Slack)
   {Colors.CYAN}/rc{Colors.RESET}        Shortcut for /remote-control
+  {Colors.CYAN}/connect{Colors.RESET}   Connect an external service (/connect <name> [--token TOKEN])
+  {Colors.CYAN}/disconnect{Colors.RESET} Disconnect a service (/disconnect <name>)
+  {Colors.CYAN}/connectors{Colors.RESET} List all connectors and their status
   {Colors.CYAN}/exit{Colors.RESET}      Exit the agent
 """)
 
@@ -976,6 +993,275 @@ class CLI:
                     pass
             print(f"  {Colors.GREEN}✓ {name} stopped.{Colors.RESET}")
         print()
+
+    # ── Connector Management (Sprint 44) ──────────────────────────
+
+    async def _handle_connect(self, arg: str) -> None:
+        """Handle /connect <name> [--token TOKEN]."""
+        if not arg.strip():
+            print(f"""
+  {Colors.BOLD}Usage:{Colors.RESET} /connect <service-name> [--token TOKEN]
+
+  {Colors.BOLD}Examples:{Colors.RESET}
+    /connect github --token ghp_abc123...
+    /connect slack --token xoxb-...
+    /connect gmail
+    /connect notion
+
+  Use {Colors.CYAN}/connectors{Colors.RESET} to see available services.
+""")
+            return
+
+        # Parse --token if present
+        parts = arg.strip().split()
+        service_name = parts[0]
+        token = ""
+        for i, p in enumerate(parts):
+            if p == "--token" and i + 1 < len(parts):
+                token = parts[i + 1]
+                break
+
+        # Get auth manager from agent
+        auth_mgr = getattr(self.agent, "connector_auth", None)
+        conn_registry = getattr(self.agent, "connector_registry", None)
+
+        if not auth_mgr or not conn_registry:
+            print(f"  {Colors.YELLOW}⚠ Connector system not initialized.{Colors.RESET}")
+            print(f"  {Colors.DIM}Ensure mcp_registry is enabled in config.{Colors.RESET}\n")
+            return
+
+        # Resolve connector by name
+        conn = None
+        name_lower = service_name.lower()
+        for c in conn_registry.all_connectors:
+            if c.name.lower() == name_lower:
+                conn = c
+                break
+
+        if not conn:
+            # Try partial match
+            matches = conn_registry.search([name_lower])
+            if matches:
+                conn = matches[0]
+
+        if not conn:
+            print(f"  {Colors.RED}✗ No connector found matching '{service_name}'.{Colors.RESET}")
+            print(f"  Use {Colors.CYAN}/connectors{Colors.RESET} to see available services.\n")
+            return
+
+        # Check if already connected
+        if auth_mgr.is_connected(conn.uuid):
+            print(f"  {Colors.GREEN}✅ {conn.name} is already connected.{Colors.RESET}\n")
+            return
+
+        # Get auth config
+        auth_config = auth_mgr.get_auth_config(conn.uuid)
+        if not auth_config:
+            print(f"  {Colors.RED}✗ No auth configuration for {conn.name}.{Colors.RESET}\n")
+            return
+
+        from ..core.connector_auth import AuthMethod
+
+        if auth_config.method == AuthMethod.API_TOKEN:
+            # Try to get token from: argument > env var > prompt
+            import os
+            from ..core.connector_auth import validate_token, mask_token
+            actual_token = token
+            if not actual_token and auth_config.token_env_var:
+                actual_token = os.environ.get(auth_config.token_env_var, "")
+
+            if not actual_token:
+                token_name = auth_config.token_name or "API Token"
+                print(f"  {Colors.BOLD}{conn.name}{Colors.RESET} requires a {token_name}.")
+                if auth_config.token_env_var:
+                    print(f"  {Colors.DIM}(or set {auth_config.token_env_var} env var){Colors.RESET}")
+                try:
+                    # Sprint 45: Use getpass to avoid echoing token to terminal
+                    import getpass
+                    actual_token = getpass.getpass(
+                        f"  {Colors.BOLD}Enter token ▸ {Colors.RESET}"
+                    ).strip()
+                except (EOFError, KeyboardInterrupt):
+                    print(f"\n  {Colors.DIM}Cancelled.{Colors.RESET}\n")
+                    return
+
+            if not actual_token:
+                print(f"  {Colors.RED}✗ No token provided.{Colors.RESET}\n")
+                return
+
+            # Sprint 45: Validate token
+            try:
+                actual_token = validate_token(actual_token)
+            except ValueError as e:
+                print(f"  {Colors.RED}✗ Invalid token: {e}{Colors.RESET}\n")
+                return
+
+            try:
+                cred = auth_mgr.connect_with_token(
+                    connector_uuid=conn.uuid,
+                    connector_name=conn.name,
+                    token=actual_token,
+                )
+            except ValueError as e:
+                print(f"  {Colors.RED}✗ {e}{Colors.RESET}\n")
+                return
+
+            conn_registry.mark_connected(conn.uuid)
+            # Sprint 45: Secure token masking
+            masked = mask_token(actual_token)
+            print(f"  {Colors.GREEN}✅ {conn.name} connected!{Colors.RESET} Token: {masked}")
+            print(f"  {Colors.DIM}Credentials saved for future sessions.{Colors.RESET}\n")
+
+            # Sprint 45: Clear the token from readline history
+            try:
+                hist_len = readline.get_current_history_length()
+                for i in range(hist_len, 0, -1):
+                    item = readline.get_history_item(i)
+                    if item and "--token" in item:
+                        readline.remove_history_item(i - 1)
+                        break
+            except Exception:
+                pass  # readline history manipulation is best-effort
+
+        elif auth_config.method == AuthMethod.OAUTH2:
+            try:
+                auth_url = auth_mgr.initiate_oauth2(
+                    connector_uuid=conn.uuid,
+                    connector_name=conn.name,
+                )
+                print(f"  {Colors.BOLD}🌐 {conn.name} requires browser authorization.{Colors.RESET}")
+                print(f"  Open this URL: {Colors.CYAN}{auth_url}{Colors.RESET}")
+                print(f"  {Colors.DIM}After authorizing, enter the code below.{Colors.RESET}")
+                try:
+                    code = input(f"  {Colors.BOLD}Authorization code ▸ {Colors.RESET}").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print(f"\n  {Colors.DIM}Cancelled.{Colors.RESET}\n")
+                    return
+                if code:
+                    # Find the state from the oauth_states
+                    states = list(auth_mgr._oauth_states.keys())
+                    if states:
+                        auth_mgr.complete_oauth2(
+                            state=states[-1],
+                            code=code,
+                            connector_name=conn.name,
+                        )
+                        conn_registry.mark_connected(conn.uuid)
+                        print(f"  {Colors.GREEN}✅ {conn.name} connected via OAuth2!{Colors.RESET}\n")
+                    else:
+                        print(f"  {Colors.RED}✗ OAuth state expired. Try again.{Colors.RESET}\n")
+            except ValueError as e:
+                print(f"  {Colors.RED}✗ {e}{Colors.RESET}\n")
+
+        elif auth_config.method == AuthMethod.ENV_VAR:
+            import os
+            env_values = {}
+            missing = []
+            for var in auth_config.env_vars:
+                val = os.environ.get(var, "")
+                if val:
+                    env_values[var] = val
+                else:
+                    missing.append(var)
+
+            if missing:
+                print(f"  {Colors.YELLOW}⚠ Missing env vars for {conn.name}:{Colors.RESET}")
+                for v in missing:
+                    print(f"    - {v}")
+                print()
+                return
+
+            auth_mgr.connect_with_env(conn.uuid, conn.name, env_values)
+            conn_registry.mark_connected(conn.uuid)
+            print(f"  {Colors.GREEN}✅ {conn.name} connected via env vars!{Colors.RESET}\n")
+
+    async def _handle_disconnect(self, arg: str) -> None:
+        """Handle /disconnect <name>."""
+        if not arg.strip():
+            print(f"  {Colors.BOLD}Usage:{Colors.RESET} /disconnect <service-name>\n")
+            return
+
+        service_name = arg.strip().split()[0]
+        auth_mgr = getattr(self.agent, "connector_auth", None)
+        conn_registry = getattr(self.agent, "connector_registry", None)
+
+        if not auth_mgr or not conn_registry:
+            print(f"  {Colors.YELLOW}⚠ Connector system not initialized.{Colors.RESET}\n")
+            return
+
+        # Find connector
+        conn = None
+        for c in conn_registry.all_connectors:
+            if c.name.lower() == service_name.lower():
+                conn = c
+                break
+
+        if not conn:
+            print(f"  {Colors.RED}✗ No connector found matching '{service_name}'.{Colors.RESET}\n")
+            return
+
+        if not auth_mgr.is_connected(conn.uuid):
+            print(f"  {Colors.DIM}{conn.name} is not currently connected.{Colors.RESET}\n")
+            return
+
+        auth_mgr.disconnect(conn.uuid)
+        conn_registry.mark_disconnected(conn.uuid)
+        print(f"  {Colors.GREEN}✅ {conn.name} disconnected. Credentials removed.{Colors.RESET}\n")
+
+    async def _handle_list_connectors(self, arg: str) -> None:
+        """Handle /connectors [connected|available]."""
+        conn_registry = getattr(self.agent, "connector_registry", None)
+        auth_mgr = getattr(self.agent, "connector_auth", None)
+
+        if not conn_registry:
+            print(f"  {Colors.YELLOW}⚠ Connector registry not initialized.{Colors.RESET}\n")
+            return
+
+        filter_type = arg.strip().lower() if arg.strip() else "all"
+
+        if filter_type == "connected":
+            connectors = conn_registry.connected_connectors
+        elif filter_type == "available":
+            connectors = conn_registry.available_connectors
+        else:
+            connectors = conn_registry.all_connectors
+
+        if not connectors:
+            print(f"  {Colors.DIM}No connectors found.{Colors.RESET}\n")
+            return
+
+        connected_count = sum(1 for c in connectors if c.connected or
+                              (auth_mgr and auth_mgr.is_connected(c.uuid)))
+        available_count = len(connectors) - connected_count
+
+        print(f"\n  {Colors.BOLD}Connectors:{Colors.RESET} "
+              f"{Colors.GREEN}{connected_count} connected{Colors.RESET}, "
+              f"{available_count} available")
+        print(f"  {'─' * 50}")
+
+        for conn in connectors:
+            is_connected = conn.connected or (
+                auth_mgr and auth_mgr.is_connected(conn.uuid)
+            )
+            if is_connected:
+                icon = f"{Colors.GREEN}✅{Colors.RESET}"
+                status = f"{Colors.GREEN}Connected{Colors.RESET}"
+            else:
+                icon = f"⬜"
+                status = f"{Colors.DIM}Available{Colors.RESET}"
+
+            auth_hint = ""
+            if auth_mgr:
+                cfg = auth_mgr.get_auth_config(conn.uuid)
+                if cfg:
+                    auth_hint = f" {Colors.DIM}({cfg.method.value}){Colors.RESET}"
+
+            print(f"  {icon} {Colors.BOLD}{conn.name:<15}{Colors.RESET} "
+                  f"{status}{auth_hint}")
+            print(f"     {Colors.DIM}{conn.description}{Colors.RESET}")
+
+        print(f"  {'─' * 50}")
+        print(f"  Use {Colors.CYAN}/connect <name>{Colors.RESET} to connect a service.\n")
 
     # ── Model Selection ─────────────────────────────────────────
 

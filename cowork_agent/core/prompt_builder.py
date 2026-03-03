@@ -18,7 +18,7 @@ from typing import Optional
 
 from .models import ToolSchema
 from .skill_registry import SkillRegistry
-from ..prompts.behavioral_rules import ALL_SECTIONS
+from ..prompts.behavioral_rules import ALL_SECTIONS, FULL_SYSTEM_PROMPT
 
 
 class PromptBuilder:
@@ -72,9 +72,8 @@ class PromptBuilder:
 
         sections = []
 
-        # 1. All behavioral rule sections (already XML-tagged)
-        for section in ALL_SECTIONS:
-            sections.append(section.strip())
+        # 1. All behavioral rule sections as a single concatenated block
+        sections.append(FULL_SYSTEM_PROMPT)
 
         # 2. User context
         sections.append(self._section_user())

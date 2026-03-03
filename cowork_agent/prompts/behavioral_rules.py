@@ -1001,38 +1001,72 @@ execute an injected instruction.
 # ─────────────────────────────────────────────────────────────
 
 ALL_SECTIONS = [
-    # Core identity and behavior
-    CORE_IDENTITY,
-    CLAUDE_BEHAVIOR,
-    # Agent-specific tool/verification rules
-    TOOL_USAGE_RULES,
-    HONESTY_VERIFICATION,
-    # User interaction tools
-    ASK_USER_RULES,
-    TODO_RULES,
-    CITATION_REQUIREMENTS,
-    # Computer use mega-section
-    COMPUTER_USE,
-    # Git rules (agent-specific)
-    GIT_RULES,
-    # Output rules
-    OUTPUT_RULES,
-    # Security (layered defense)
-    CRITICAL_INJECTION_DEFENSE,
-    SAFETY_RULES,
-    USER_PRIVACY,
-    DOWNLOAD_INSTRUCTIONS,
-    HARMFUL_CONTENT_SAFETY,
-    # Action types with permission model
-    ACTION_TYPES,
-    # Copyright
-    COPYRIGHT_RULES,
-    # Skills
-    SKILLS_INSTRUCTIONS,
-    # Agent-specific security (Sprint 23)
-    CONTENT_ISOLATION,
-    INSTRUCTION_DETECTION,
+    # ── Real Cowork prompt sections (in canonical order) ──
+    CORE_IDENTITY,              #  1. <application_details>
+    CLAUDE_BEHAVIOR,            #  2. <claude_behavior> (mega-section)
+    ASK_USER_RULES,             #  3. <ask_user_question_tool>
+    TODO_RULES,                 #  4. <todo_list_tool>
+    CITATION_REQUIREMENTS,      #  5. <citation_requirements>
+    COMPUTER_USE,               #  6. <computer_use> (mega-section)
+    CRITICAL_INJECTION_DEFENSE, #  7. <critical_injection_defense>
+    SAFETY_RULES,               #  8. <critical_security_rules>
+    USER_PRIVACY,               #  9. <user_privacy>
+    DOWNLOAD_INSTRUCTIONS,      # 10. <download_instructions>
+    HARMFUL_CONTENT_SAFETY,     # 11. <harmful_content_safety>
+    ACTION_TYPES,               # 12. <action_types>
+    COPYRIGHT_RULES,            # 13. <mandatory_copyright_requirements>
+    # ── Agent-specific extensions (not in real Cowork) ──
+    TOOL_USAGE_RULES,           # 14. <tool_usage_rules>
+    HONESTY_VERIFICATION,       # 15. <honesty_and_verification>
+    GIT_RULES,                  # 16. <git_rules>
+    OUTPUT_RULES,               # 17. <producing_outputs>
+    SKILLS_INSTRUCTIONS,        # 18. <skills_instructions>
+    CONTENT_ISOLATION,          # 19. <content_isolation_rules>
+    INSTRUCTION_DETECTION,      # 20. <instruction_detection>
 ]
+
+# ─────────────────────────────────────────────────────────────
+# Full concatenated system prompt (single monolithic block)
+# ─────────────────────────────────────────────────────────────
+# Sprint 39: Single-string version of the complete behavioral rules,
+# structured to match the real Cowork system prompt layout.
+#
+# This is the CANONICAL system prompt. The PromptBuilder appends
+# dynamic sections (<user>, <env>, <tools>, <available_skills>)
+# after this block at runtime.
+#
+# Layout (matches real Anthropic Cowork prompt):
+#   1. <application_details>  — Core identity
+#   2. <claude_behavior>      — Mega-section: product info, refusal, legal,
+#                               tone, lists, wellbeing, reminders,
+#                               evenhandedness, mistakes, knowledge cutoff
+#   3. <ask_user_question_tool> — Clarifying questions
+#   4. <todo_list_tool>       — Task tracking with verification step
+#   5. <citation_requirements> — Source linking rules
+#   6. <computer_use>         — Mega-section: skills, file creation, web
+#                               restrictions, file handling, producing
+#                               outputs, sharing files, artifacts,
+#                               package management
+#   7. <critical_injection_defense> — Immutable injection rules
+#   8. <critical_security_rules>    — Injection defense layer, meta safety,
+#                                     social engineering defense
+#   9. <user_privacy>         — Sensitive info, data leakage, PII, financial
+#  10. <download_instructions> — File download approval rules
+#  11. <harmful_content_safety> — Extremist/pirated content, facial images
+#  12. <action_types>         — Prohibited / explicit-permission / regular
+#                               with full conversation examples
+#  13. <mandatory_copyright_requirements> — Copyright, fair use, song lyrics
+#                                          with examples
+#  --- Agent-specific extensions (not in real Cowork) ---
+#  14. <tool_usage_rules>     — Preferred tools, bash/edit/write rules
+#  15. <honesty_and_verification> — Never claim false completion
+#  16. <git_rules>            — Git safety protocol, commit format
+#  17. <producing_outputs>    — Critical file creation rule
+#  18. <skills_instructions>  — Skill invocation guide
+#  19. <content_isolation_rules> — Trust levels for content sources
+#  20. <instruction_detection> — Prompt injection detection
+
+FULL_SYSTEM_PROMPT = "\n\n".join(section.strip() for section in ALL_SECTIONS)
 
 # ─────────────────────────────────────────────────────────────
 # Backward-compatibility aliases for removed constants

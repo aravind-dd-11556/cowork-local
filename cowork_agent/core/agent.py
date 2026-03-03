@@ -157,6 +157,10 @@ class Agent:
         # Sprint 43: Multi-Agent Crew Mode (set by main.py)
         self.crew_manager = None       # CrewManager instance
 
+        # Sprint 44: Connector Auth (set by main.py)
+        self.connector_auth = None     # ConnectorAuthManager instance
+        self.connector_registry = None # ConnectorRegistry instance
+
         # Sprint 29: Skill-before-work enforcement
         self._skill_enforcement_enabled = True  # enforce skill reading before work
 

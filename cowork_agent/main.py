@@ -1413,6 +1413,58 @@ def main() -> None:
                 "MCP Registry tools registered: %d connectors, %d plugins",
                 len(connector_registry), len(plugin_registry),
             )
+
+            # ── Sprint 44: Connector Auth Manager ─────────────────────────
+            try:
+                from .core.connector_auth import ConnectorAuthManager, CredentialStore
+                from .tools.connector_tools import (
+                    ConnectConnectorTool,
+                    DisconnectConnectorTool,
+                    ListConnectorsTool,
+                )
+
+                cred_dir = config.get(
+                    "connector_auth.credentials_dir", ""
+                )
+                cred_store = CredentialStore(credentials_dir=cred_dir)
+                connector_auth = ConnectorAuthManager(
+                    credential_store=cred_store,
+                )
+
+                # Auto-reconnect saved credentials
+                saved = connector_auth.load_saved_credentials()
+                for cred in saved:
+                    connector_registry.mark_connected(cred.connector_uuid)
+                if saved:
+                    logger.info(
+                        f"Auto-reconnected {len(saved)} connectors: "
+                        f"{[c.connector_name for c in saved]}"
+                    )
+
+                # Register connector management tools
+                registry.register(ConnectConnectorTool(
+                    auth_manager=connector_auth,
+                    connector_registry=connector_registry,
+                ))
+                registry.register(DisconnectConnectorTool(
+                    auth_manager=connector_auth,
+                    connector_registry=connector_registry,
+                ))
+                registry.register(ListConnectorsTool(
+                    auth_manager=connector_auth,
+                    connector_registry=connector_registry,
+                ))
+
+                # Attach to agent for CLI access
+                agent.connector_auth = connector_auth
+                agent.connector_registry = connector_registry
+
+                logger.info(
+                    "Connector auth initialized: %d saved credentials loaded",
+                    len(saved),
+                )
+            except Exception as e:
+                logger.debug(f"Connector auth not available: {e}")
     except Exception as e:
         logger.debug(f"MCP Registry tools not available: {e}")
 
