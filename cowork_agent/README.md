@@ -581,7 +581,3 @@ All settings can be set via `default_config.yaml`, a custom YAML file (`-c`), or
 │  Web Dashboard (real-time metrics, health, audit, benchmarks)        │
 └──────────────────────────────────────────────────────────────────────┘
 ```
-
-## License
-
-Internal project — Zoho Corp.
