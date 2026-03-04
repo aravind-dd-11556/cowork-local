@@ -53,6 +53,25 @@ SAFE_UUID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
 # File permission: owner read/write only
 CREDENTIAL_FILE_MODE = 0o600
 
+# ── C-7 / H-13: Environment Variable Injection Protection ────────────
+# Whitelist of safe environment variable names for connector authentication
+SAFE_ENV_VAR_PATTERNS = {
+    "SLACK_BOT_TOKEN", "GITHUB_TOKEN", "OAUTH_ACCESS_TOKEN",
+    "REFRESH_TOKEN", "API_KEY", "API_TOKEN", "AUTH_TOKEN",
+    "CLIENT_ID", "CLIENT_SECRET", "WEBHOOK_URL",
+    "GMAIL_CLIENT_ID", "GOOGLE_DRIVE_CLIENT_ID", "ASANA_TOKEN",
+    "JIRA_API_TOKEN", "NOTION_TOKEN", "LINEAR_API_KEY",
+    "HUBSPOT_TOKEN", "SALESFORCE_CLIENT_ID", "ZOHO_CRM_TOKEN",
+    "DROPBOX_TOKEN", "TRELLO_API_KEY", "CONFLUENCE_TOKEN", "CANVA_API_KEY",
+}
+
+# Dangerous environment variables that should never be injected
+DANGEROUS_ENV_VARS = {
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "PATH", "PYTHONPATH",
+    "PYTHONSTARTUP", "PYTHONHOME", "HOME", "USER", "SHELL",
+    "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+}
+
 
 class AuthMethod(Enum):
     """Supported authentication methods."""
@@ -159,6 +178,51 @@ def mask_token(token: str, show_chars: int = 3) -> str:
         return "*" * max(length, 4)
     # Show at most `show_chars` from each end
     return token[:show_chars] + "*" * max(length - show_chars * 2, 4) + token[-show_chars:]
+
+
+def validate_env_var_name(var_name: str) -> str:
+    """
+    Validate an environment variable name for safety.
+
+    C-7 / H-13: Rejects dangerous env vars and ensures safe character set.
+
+    Args:
+        var_name: Environment variable name to validate
+
+    Returns:
+        The validated variable name
+
+    Raises:
+        ValueError: If the variable name is unsafe
+    """
+    if not var_name or not isinstance(var_name, str):
+        raise ValueError("Env var name must be a non-empty string")
+
+    stripped = var_name.strip()
+    if not stripped:
+        raise ValueError("Env var name cannot be empty")
+
+    # Check for dangerous env vars
+    if stripped.upper() in DANGEROUS_ENV_VARS:
+        raise ValueError(
+            f"Unsafe environment variable '{stripped}': known injection vector"
+        )
+
+    # Only allow alphanumeric and underscore characters
+    if not all(c.isalnum() or c == '_' for c in stripped):
+        raise ValueError(
+            f"Env var name '{stripped}' contains invalid characters. "
+            f"Only alphanumeric and underscores are allowed."
+        )
+
+    # Warn if unknown (not in whitelist)
+    if stripped not in SAFE_ENV_VAR_PATTERNS:
+        logger.warning(
+            f"Unknown environment variable '{stripped}' being configured. "
+            f"Ensure this is a legitimate connector credential."
+        )
+
+    return stripped
 
 
 def sanitize_uuid(connector_uuid: str) -> str:
@@ -799,6 +863,9 @@ class ConnectorAuthManager:
 
         Sprint 45: Only exports declared env var names from auth config.
         No longer blindly dumps all token keys as env vars.
+
+        C-7 / H-13: Validates all env var names for safety before injection.
+        Rejects dangerous injection vectors (LD_PRELOAD, PYTHONPATH, etc).
         """
         cred = self.get_credential(connector_uuid)
         if not cred:
@@ -810,24 +877,43 @@ class ConnectorAuthManager:
         if cred.auth_method == AuthMethod.API_TOKEN.value:
             # Sprint 45: Only map to the declared env var from config
             if cfg and cfg.token_env_var:
-                token_val = cred.tokens.get("api_token", "")
-                if token_val:
-                    env[cfg.token_env_var] = token_val
+                try:
+                    validated_var = validate_env_var_name(cfg.token_env_var)
+                    token_val = cred.tokens.get("api_token", "")
+                    if token_val:
+                        env[validated_var] = token_val
+                except ValueError as e:
+                    logger.warning(f"Skipping unsafe env var injection: {e}")
 
         elif cred.auth_method == AuthMethod.OAUTH2.value:
             access = cred.tokens.get("access_token", "")
             if access:
                 if cfg and cfg.token_env_var:
-                    env[cfg.token_env_var] = access
+                    try:
+                        validated_var = validate_env_var_name(cfg.token_env_var)
+                        env[validated_var] = access
+                    except ValueError as e:
+                        logger.warning(f"Skipping unsafe env var injection: {e}")
+                # OAUTH_ACCESS_TOKEN is always safe (in whitelist)
                 env["OAUTH_ACCESS_TOKEN"] = access
 
         elif cred.auth_method == AuthMethod.ENV_VAR.value:
             # Sprint 45: Only export declared env vars from config
             if cfg and cfg.env_vars:
                 for var in cfg.env_vars:
-                    if var in cred.tokens:
-                        env[var] = cred.tokens[var]
+                    try:
+                        validated_var = validate_env_var_name(var)
+                        if var in cred.tokens:
+                            env[validated_var] = cred.tokens[var]
+                    except ValueError as e:
+                        logger.warning(f"Skipping unsafe env var '{var}': {e}")
             else:
-                env.update(cred.tokens)
+                # When no config, still validate each env var name
+                for var, val in cred.tokens.items():
+                    try:
+                        validated_var = validate_env_var_name(var)
+                        env[validated_var] = val
+                    except ValueError as e:
+                        logger.warning(f"Skipping unsafe env var '{var}': {e}")
 
         return env

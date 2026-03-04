@@ -21,8 +21,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+import time
 
 from .base import BaseInterface
 from ..core.agent import Agent
@@ -150,6 +152,60 @@ class WebSocketConnectionManager:
 # ── REST + WebSocket Interface ───────────────────────────────────
 
 
+# ── L-8: Rate Limiting ─────────────────────────────────────────────
+
+class RateLimiter:
+    """Simple in-memory rate limiter for API endpoints.
+
+    L-8: Protects against brute-force and DoS attacks by tracking
+    request counts per client IP within time windows.
+    """
+
+    def __init__(self, max_requests: int = 100, window_seconds: int = 60):
+        """
+        Initialize rate limiter.
+
+        Args:
+            max_requests: Maximum requests allowed per window
+            window_seconds: Time window in seconds
+        """
+        self._requests: dict[str, list[float]] = {}
+        self._max = max_requests
+        self._window = window_seconds
+
+    def check(self, client_ip: str) -> bool:
+        """
+        Check if client has exceeded rate limit.
+
+        Args:
+            client_ip: Client IP address
+
+        Returns:
+            True if within limit, False if exceeded
+        """
+        now = time.time()
+        reqs = self._requests.get(client_ip, [])
+        # Remove requests outside the window
+        reqs = [t for t in reqs if now - t < self._window]
+
+        if len(reqs) >= self._max:
+            return False
+
+        reqs.append(now)
+        self._requests[client_ip] = reqs
+        return True
+
+    def cleanup(self, older_than_seconds: int = 3600) -> None:
+        """Remove old request history to prevent memory leaks."""
+        now = time.time()
+        cutoff = now - older_than_seconds
+        for client_ip in list(self._requests.keys()):
+            reqs = self._requests[client_ip]
+            self._requests[client_ip] = [t for t in reqs if t > cutoff]
+            if not self._requests[client_ip]:
+                del self._requests[client_ip]
+
+
 class RestAPIInterface(BaseInterface):
     """FastAPI-based REST API and WebSocket server.
 
@@ -189,12 +245,60 @@ class RestAPIInterface(BaseInterface):
         self._cancellation_tokens: dict[str, Any] = {}  # session_id -> StreamCancellationToken
         self._dashboard_ws_clients: list[WebSocket] = []
 
+        # L-8: Initialize rate limiter
+        self._rate_limiter = RateLimiter(max_requests=100, window_seconds=60)
+        self._cleanup_task = None
+
         self.app = FastAPI(
             title="Cowork Agent API",
             description="Remote control interface for the cowork agent.",
             version="1.0.0",
         )
+
+        # M-11: Add CORS middleware for development
+        self.app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["http://localhost:3000", "http://localhost:8080", "http://127.0.0.1:3000", "http://127.0.0.1:8080"],
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            allow_headers=["*"],
+        )
+
+        # M-8: Register startup event for periodic cleanup
+        @self.app.on_event("startup")
+        async def start_cleanup_task():
+            """Start background session cleanup task."""
+            self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
+
+        @self.app.on_event("shutdown")
+        async def stop_cleanup_task():
+            """Stop background cleanup task on shutdown."""
+            if self._cleanup_task and not self._cleanup_task.done():
+                self._cleanup_task.cancel()
+                try:
+                    await self._cleanup_task
+                except asyncio.CancelledError:
+                    pass
+
         self._setup_routes()
+
+    # ── M-8: Periodic Cleanup ─────────────────────────────────────
+
+    async def _periodic_cleanup(self) -> None:
+        """Periodically clean up stale sessions and rate limit history."""
+        while True:
+            try:
+                await asyncio.sleep(3600)  # Every hour
+                # Clean up sessions inactive for 24+ hours
+                await self._sessions.cleanup_stale(max_age_hours=24)
+                # Clean up old rate limiter entries
+                self._rate_limiter.cleanup(older_than_seconds=3600)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                # Log but don't crash on cleanup errors
+                import logging
+                logging.warning(f"Cleanup task error: {e}")
 
     # ── Route Setup ─────────────────────────────────────────────
 
@@ -273,7 +377,10 @@ class RestAPIInterface(BaseInterface):
 
         @app.websocket("/ws/dashboard")
         async def dashboard_ws(ws: WebSocket):
-            """WebSocket for real-time dashboard updates."""
+            """WebSocket for real-time dashboard updates.
+
+            M-9: Validates message size and structure.
+            """
             await ws.accept()
             self._dashboard_ws_clients.append(ws)
             try:
@@ -281,8 +388,15 @@ class RestAPIInterface(BaseInterface):
                     # Keep connection alive; client doesn't send data
                     raw = await ws.receive_text()
                     # Optionally handle refresh requests
+
+                    # M-9: Validate message size
+                    if len(raw) > 1_000_000:
+                        continue
+
                     try:
                         msg = json.loads(raw)
+                        if not isinstance(msg, dict):
+                            continue
                         if msg.get("type") == "refresh":
                             if self._dashboard_provider:
                                 await ws.send_json({
@@ -448,20 +562,31 @@ class RestAPIInterface(BaseInterface):
             }
 
         @app.get("/api/health")
-        async def health_check():
-            """System health check."""
+        async def health_check(request: Request):
+            """System health check.
+
+            L-7: This endpoint is intentionally unauthenticated for monitoring
+            and observability purposes. Access should be restricted at the
+            infrastructure/network level if needed.
+            """
+            # L-7: Add request ID header for audit trail
+            request_id = request.headers.get("X-Request-ID", f"health_{uuid.uuid4().hex[:8]}")
             return {
                 "status": "ok",
                 "service": "cowork-agent-api",
                 "sessions": len(self._sessions._metadata),
                 "timestamp": time.time(),
+                "request_id": request_id,
             }
 
         # ── WebSocket ───────────────────────────────────────────
 
         @app.websocket("/ws/{session_id}")
         async def websocket_endpoint(ws: WebSocket, session_id: str):
-            """Real-time bidirectional communication."""
+            """Real-time bidirectional communication.
+
+            M-9: Validates message size and structure to prevent abuse.
+            """
             try:
                 agent = await self._sessions.get_agent(session_id)
             except HTTPException:
@@ -474,7 +599,32 @@ class RestAPIInterface(BaseInterface):
             try:
                 while True:
                     raw = await ws.receive_text()
-                    msg = json.loads(raw)
+
+                    # M-9: Validate message size (max 1MB)
+                    if len(raw) > 1_000_000:
+                        await ws.send_json({
+                            "type": "error",
+                            "message": "Message too large (max 1MB)",
+                        })
+                        continue
+
+                    # M-9: Validate message structure
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        await ws.send_json({
+                            "type": "error",
+                            "message": "Invalid JSON",
+                        })
+                        continue
+
+                    # Ensure msg is a dictionary
+                    if not isinstance(msg, dict):
+                        await ws.send_json({
+                            "type": "error",
+                            "message": "Message must be a JSON object",
+                        })
+                        continue
 
                     if msg.get("type") == "message":
                         content = msg.get("content", "")

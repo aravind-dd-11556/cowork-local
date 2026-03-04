@@ -11,6 +11,8 @@ with real Chrome operations (navigate, screenshot, click, type, etc.).
 from __future__ import annotations
 import asyncio
 import logging
+import re
+import json
 from dataclasses import dataclass
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -21,6 +23,14 @@ from cowork_agent.core.browser_session import AccessibilityNode
 from cowork_agent.core.chrome_ws_client import ChromeWSClient, ChromeWSConfig
 
 logger = logging.getLogger(__name__)
+
+# Input validation constants
+MAX_TAB_ID_LENGTH = 100
+MAX_URL_LENGTH = 2048
+MAX_JS_CODE_SIZE = 1_048_576  # 1MB
+MAX_QUERY_LENGTH = 1000
+MAX_VALUE_SIZE = 10_240  # 10KB
+REF_ID_PATTERN = r"^ref_\d+$"
 
 
 @dataclass
@@ -116,6 +126,59 @@ class ChromeBridge:
             self._session = None
             logger.info("Chrome bridge detached from BrowserSession")
 
+    # ── Input Validation Helpers ───────────────────────────────────────
+
+    def _validate_tab_id(self, tab_id: Any) -> None:
+        """Validate tab_id parameter."""
+        if not isinstance(tab_id, (int, str)):
+            raise ValueError(f"tab_id must be string or int, got {type(tab_id).__name__}")
+        tab_id_str = str(tab_id)
+        if not tab_id_str or len(tab_id_str) > MAX_TAB_ID_LENGTH:
+            raise ValueError(f"tab_id must be non-empty, max {MAX_TAB_ID_LENGTH} chars")
+
+    def _validate_url(self, url: str) -> None:
+        """Validate URL parameter."""
+        if not isinstance(url, str):
+            raise ValueError(f"url must be string, got {type(url).__name__}")
+        if len(url) > MAX_URL_LENGTH:
+            raise ValueError(f"url exceeds max length of {MAX_URL_LENGTH} chars")
+        # URL must start with allowed protocols
+        allowed_prefixes = ("http://", "https://", "about:", "chrome://", "data:")
+        if not any(url.startswith(prefix) for prefix in allowed_prefixes):
+            raise ValueError(f"url must start with http://, https://, about:, chrome://, or data:")
+
+    def _validate_code(self, code: str) -> None:
+        """Validate JavaScript code parameter."""
+        if not isinstance(code, str):
+            raise ValueError(f"code must be string, got {type(code).__name__}")
+        if len(code) > MAX_JS_CODE_SIZE:
+            raise ValueError(f"code exceeds max size of {MAX_JS_CODE_SIZE} bytes")
+
+    def _validate_query(self, query: str) -> None:
+        """Validate query parameter."""
+        if not isinstance(query, str):
+            raise ValueError(f"query must be string, got {type(query).__name__}")
+        if len(query) > MAX_QUERY_LENGTH:
+            raise ValueError(f"query exceeds max length of {MAX_QUERY_LENGTH} chars")
+
+    def _validate_ref_id(self, ref_id: str) -> None:
+        """Validate ref_id matches pattern ref_<digits>."""
+        if not isinstance(ref_id, str):
+            raise ValueError(f"ref_id must be string, got {type(ref_id).__name__}")
+        if not re.match(REF_ID_PATTERN, ref_id):
+            raise ValueError(f"ref_id must match pattern 'ref_<digits>', got '{ref_id}'")
+
+    def _validate_value_size(self, value: Any) -> None:
+        """Validate serialized value size."""
+        try:
+            serialized = json.dumps(value)
+            if len(serialized.encode()) > MAX_VALUE_SIZE:
+                raise ValueError(f"value exceeds max serialized size of {MAX_VALUE_SIZE} bytes")
+        except (TypeError, ValueError) as e:
+            if isinstance(e, ValueError) and "exceeds max" in str(e):
+                raise
+            raise ValueError(f"value must be JSON serializable: {e}")
+
     # ── Callback Handlers ──────────────────────────────────────────
 
     def _handle_navigate(self, tab_id: int, url: str) -> None:
@@ -171,43 +234,78 @@ class ChromeBridge:
     async def find_elements(self, tab_id: int, query: str) -> list[dict]:
         """Request element search from Chrome extension."""
         try:
+            self._validate_tab_id(tab_id)
+            self._validate_query(query)
             result = await self._client.call("browser/findElements", {
                 "tabId": tab_id, "query": query,
             })
             return result.get("elements", [])
+        except ValueError as e:
+            logger.error("Find elements validation failed: %s", e)
+            logger.debug("Find elements validation error detail", exc_info=True)
+            return []
         except Exception as e:
-            logger.error("Find elements via bridge failed: %s", e)
+            logger.error("Find elements via bridge failed")
+            logger.debug("Find elements error detail: %s", e)
             return []
 
     async def set_form_value(self, tab_id: int, ref_id: str, value: Any) -> dict:
         """Forward form input to Chrome extension."""
         try:
+            self._validate_tab_id(tab_id)
+            self._validate_ref_id(ref_id)
+            self._validate_value_size(value)
             return await self._client.call("browser/formInput", {
                 "tabId": tab_id, "ref": ref_id, "value": value,
             })
+        except ValueError as e:
+            logger.error("Form input validation failed")
+            logger.debug("Form input validation error: %s", e)
+            return {"success": False, "error": "Operation failed"}
         except Exception as e:
-            logger.error("Form input via bridge failed: %s", e)
-            return {"success": False, "error": str(e)}
+            logger.error("Form input via bridge failed")
+            logger.debug("Form input error detail: %s", e)
+            return {"success": False, "error": "Operation failed"}
 
     async def perform_action(self, tab_id: int, action: str, params: dict) -> dict:
         """Forward mouse/keyboard action to Chrome extension."""
         try:
+            self._validate_tab_id(tab_id)
+            if not isinstance(action, str):
+                raise ValueError(f"action must be string, got {type(action).__name__}")
+            # Validate text parameter if present
+            if "text" in params and params["text"] is not None:
+                text = params["text"]
+                if not isinstance(text, str):
+                    raise ValueError(f"text parameter must be string")
             return await self._client.call("browser/performAction", {
                 "tabId": tab_id, "action": action, **params,
             })
+        except ValueError as e:
+            logger.error("Perform action validation failed")
+            logger.debug("Perform action validation error: %s", e)
+            return {"success": False, "error": "Operation failed"}
         except Exception as e:
-            logger.error("Perform action via bridge failed: %s", e)
-            return {"success": False, "error": str(e)}
+            logger.error("Perform action via bridge failed")
+            logger.debug("Perform action error detail: %s", e)
+            return {"success": False, "error": "Operation failed"}
 
     async def execute_js(self, tab_id: int, code: str) -> dict:
         """Execute JavaScript in Chrome via extension."""
         try:
+            self._validate_tab_id(tab_id)
+            self._validate_code(code)
             return await self._client.call("browser/executeScript", {
                 "tabId": tab_id, "code": code,
             })
+        except ValueError as e:
+            logger.error("JS execution validation failed")
+            logger.debug("JS execution validation error: %s", e)
+            return {"success": False, "error": "Operation failed"}
         except Exception as e:
-            logger.error("JS execution via bridge failed: %s", e)
-            return {"success": False, "error": str(e)}
+            logger.error("JS execution via bridge failed")
+            logger.debug("JS execution error detail: %s", e)
+            return {"success": False, "error": "Operation failed"}
 
     async def get_page_text(self, tab_id: int) -> str:
         """Get page text content from Chrome extension."""
@@ -245,12 +343,20 @@ class ChromeBridge:
     async def resize_window(self, tab_id: int, width: int, height: int) -> dict:
         """Resize browser window via Chrome extension."""
         try:
+            self._validate_tab_id(tab_id)
+            if not isinstance(width, int) or not isinstance(height, int):
+                raise ValueError("width and height must be integers")
             return await self._client.call("browser/resize", {
                 "tabId": tab_id, "width": width, "height": height,
             })
+        except ValueError as e:
+            logger.error("Resize validation failed")
+            logger.debug("Resize validation error: %s", e)
+            return {"success": False, "error": "Operation failed"}
         except Exception as e:
-            logger.error("Resize via bridge failed: %s", e)
-            return {"success": False, "error": str(e)}
+            logger.error("Resize via bridge failed")
+            logger.debug("Resize error detail: %s", e)
+            return {"success": False, "error": "Operation failed"}
 
     # ── Internal helpers ───────────────────────────────────────────
 
@@ -260,10 +366,11 @@ class ChromeBridge:
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 # Can't await in sync callback, return None (tool will handle async)
+                logger.warning("Sync callback called in async context - result may be None")
                 return None
             return loop.run_until_complete(self.get_accessibility_tree(tab_id))
         except Exception as e:
-            logger.error("Get tree callback failed: %s", e)
+            logger.debug("Get tree callback error: %s", e)
             return None
 
     def _handle_find(self, tab_id: int, query: str) -> list[dict]:
@@ -271,9 +378,11 @@ class ChromeBridge:
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
+                logger.warning("Sync callback called in async context - result may be None")
                 return []
             return loop.run_until_complete(self.find_elements(tab_id, query))
-        except Exception:
+        except Exception as e:
+            logger.debug("Find callback error: %s", e)
             return []
 
     def _handle_form_input(self, tab_id: int, ref_id: str, value: Any) -> dict:
@@ -281,39 +390,47 @@ class ChromeBridge:
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                return {"success": False, "error": "Cannot call in running loop"}
+                logger.warning("Sync callback called in async context - result may be None")
+                return {"success": False, "error": "Operation failed"}
             return loop.run_until_complete(self.set_form_value(tab_id, ref_id, value))
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logger.debug("Form input callback error: %s", e)
+            return {"success": False, "error": "Operation failed"}
 
     def _handle_perform_action(self, tab_id: int, action: str, **params) -> dict:
         """Sync wrapper for async perform_action."""
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                return {"success": False, "error": "Cannot call in running loop"}
+                logger.warning("Sync callback called in async context - result may be None")
+                return {"success": False, "error": "Operation failed"}
             return loop.run_until_complete(self.perform_action(tab_id, action, params))
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logger.debug("Perform action callback error: %s", e)
+            return {"success": False, "error": "Operation failed"}
 
     def _handle_js_execute(self, tab_id: int, code: str) -> dict:
         """Sync wrapper for async execute_js."""
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                return {"success": False, "error": "Cannot call in running loop"}
+                logger.warning("Sync callback called in async context - result may be None")
+                return {"success": False, "error": "Operation failed"}
             return loop.run_until_complete(self.execute_js(tab_id, code))
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logger.debug("JS execute callback error: %s", e)
+            return {"success": False, "error": "Operation failed"}
 
     def _handle_get_text(self, tab_id: int) -> str:
         """Sync wrapper for async get_page_text."""
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
+                logger.warning("Sync callback called in async context - result may be None")
                 return ""
             return loop.run_until_complete(self.get_page_text(tab_id))
-        except Exception:
+        except Exception as e:
+            logger.debug("Get text callback error: %s", e)
             return ""
 
     def _handle_read_console(self, tab_id: int) -> list[dict]:
@@ -321,9 +438,11 @@ class ChromeBridge:
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
+                logger.warning("Sync callback called in async context - result may be None")
                 return []
             return loop.run_until_complete(self.read_console(tab_id))
-        except Exception:
+        except Exception as e:
+            logger.debug("Read console callback error: %s", e)
             return []
 
     def _handle_read_network(self, tab_id: int) -> list[dict]:
@@ -331,9 +450,11 @@ class ChromeBridge:
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
+                logger.warning("Sync callback called in async context - result may be None")
                 return []
             return loop.run_until_complete(self.read_network(tab_id))
-        except Exception:
+        except Exception as e:
+            logger.debug("Read network callback error: %s", e)
             return []
 
     def _handle_resize(self, tab_id: int, width: int, height: int) -> dict:
@@ -341,10 +462,12 @@ class ChromeBridge:
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                return {"success": False, "error": "Cannot call in running loop"}
+                logger.warning("Sync callback called in async context - result may be None")
+                return {"success": False, "error": "Operation failed"}
             return loop.run_until_complete(self.resize_window(tab_id, width, height))
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logger.debug("Resize callback error: %s", e)
+            return {"success": False, "error": "Operation failed"}
 
     @staticmethod
     def _parse_accessibility_node(data: dict) -> AccessibilityNode:

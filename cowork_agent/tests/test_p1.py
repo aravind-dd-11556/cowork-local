@@ -30,6 +30,11 @@ passed = 0
 failed = 0
 
 
+def run(coro):
+    """Run an async coroutine synchronously for pytest compatibility."""
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
 def check(name, condition, detail=""):
     global passed, failed
     if condition:
@@ -116,7 +121,7 @@ def make_agent(responses, extra_tools=None, workspace_dir="/tmp/test_p1"):
 # Test 1: Circuit Breaker
 # ──────────────────────────────────────────────────
 
-async def test_circuit_breaker():
+async def _test_circuit_breaker_impl():
     print("\n--- Circuit Breaker Tests ---")
 
     fail_tool = AlwaysFailTool()
@@ -144,11 +149,15 @@ async def test_circuit_breaker():
     )
 
 
+def test_circuit_breaker():
+    run(_test_circuit_breaker_impl())
+
+
 # ──────────────────────────────────────────────────
 # Test 2: Empty Response Detection
 # ──────────────────────────────────────────────────
 
-async def test_empty_response():
+async def _test_empty_response_impl():
     print("\n--- Empty Response Detection Tests ---")
 
     # 2 empty responses then a real one
@@ -168,11 +177,15 @@ async def test_empty_response():
     )
 
 
+def test_empty_response():
+    run(_test_empty_response_impl())
+
+
 # ──────────────────────────────────────────────────
 # Test 3: Circular Loop Detection
 # ──────────────────────────────────────────────────
 
-async def test_circular_loop():
+async def _test_circular_loop_impl():
     print("\n--- Circular Loop Detection Tests ---")
 
     agent = make_agent([])
@@ -223,7 +236,11 @@ async def test_circular_loop():
     check("Different calls produce different signatures", sig1 != sig3)
 
 
-async def test_circuit_breaker_vs_loop_independence():
+def test_circular_loop():
+    run(_test_circular_loop_impl())
+
+
+async def _test_circuit_breaker_vs_loop_independence_impl():
     """
     Multi-case test: Circuit breaker and loop detection must NOT interfere.
 
@@ -327,11 +344,15 @@ async def test_circuit_breaker_vs_loop_independence():
     )
 
 
+def test_circuit_breaker_vs_loop_independence():
+    run(_test_circuit_breaker_vs_loop_independence_impl())
+
+
 # ──────────────────────────────────────────────────
 # Test 3b: Result Ordering in _execute_tools
 # ──────────────────────────────────────────────────
 
-async def test_result_ordering():
+async def _test_result_ordering_impl():
     """
     Bug fix test: _execute_tools must return results in the SAME order as
     tool_calls, even when some calls are blocked and some are executed.
@@ -407,11 +428,15 @@ async def test_result_ordering():
         )
 
 
+def test_result_ordering():
+    run(_test_result_ordering_impl())
+
+
 # ──────────────────────────────────────────────────
 # Test 3c: Policy blocks don't inflate circuit breaker
 # ──────────────────────────────────────────────────
 
-async def test_policy_block_not_counted():
+async def _test_policy_block_not_counted_impl():
     """
     Bug fix test: Plan mode / safety / validation blocks should NOT count
     as circuit breaker failures.
@@ -492,11 +517,15 @@ async def test_policy_block_not_counted():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def test_policy_block_not_counted():
+    run(_test_policy_block_not_counted_impl())
+
+
 # ──────────────────────────────────────────────────
 # Test 4: Network Retry — transient error detection
 # ──────────────────────────────────────────────────
 
-async def test_network_retry():
+async def _test_network_retry_impl():
     print("\n--- Network Retry Tests ---")
 
     # Test _is_transient function
@@ -510,11 +539,15 @@ async def test_network_retry():
     check("Parse error NOT transient", not _is_transient("Invalid JSON in response"))
 
 
+def test_network_retry():
+    run(_test_network_retry_impl())
+
+
 # ──────────────────────────────────────────────────
 # Test 5: Streaming base provider fallback
 # ──────────────────────────────────────────────────
 
-async def test_streaming():
+async def _test_streaming_impl():
     print("\n--- Streaming Tests ---")
 
     provider = MockProvider(responses=[
@@ -541,11 +574,15 @@ async def test_streaming():
     )
 
 
+def test_streaming():
+    run(_test_streaming_impl())
+
+
 # ──────────────────────────────────────────────────
 # Test 6: Task Persistence
 # ──────────────────────────────────────────────────
 
-async def test_task_persistence():
+async def _test_task_persistence_impl():
     print("\n--- Task Persistence Tests ---")
 
     tmpdir = tempfile.mkdtemp()
@@ -596,11 +633,15 @@ async def test_task_persistence():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def test_task_persistence():
+    run(_test_task_persistence_impl())
+
+
 # ──────────────────────────────────────────────────
 # Test 7: Agent run_stream method
 # ──────────────────────────────────────────────────
 
-async def test_agent_stream():
+async def _test_agent_stream_impl():
     print("\n--- Agent Streaming Tests ---")
 
     responses = [
@@ -619,11 +660,15 @@ async def test_agent_stream():
     check("Message added to memory", len(agent._messages) >= 2)  # user + assistant
 
 
+def test_agent_stream():
+    run(_test_agent_stream_impl())
+
+
 # ──────────────────────────────────────────────────
 # Test 8: Plan mode allows exit_plan_mode tool
 # ──────────────────────────────────────────────────
 
-async def test_plan_mode_exit_allowed():
+async def _test_plan_mode_exit_allowed_impl():
     print("\n--- Plan Mode Exit Allowed Tests ---")
 
     from cowork_agent.core.plan_mode import PlanManager, PLAN_MODE_ALLOWED_TOOLS
@@ -659,11 +704,15 @@ async def test_plan_mode_exit_allowed():
     check("edit still blocked in plan mode", not blocked_edit)
 
 
+def test_plan_mode_exit_allowed():
+    run(_test_plan_mode_exit_allowed_impl())
+
+
 # ──────────────────────────────────────────────────
 # Test 9: _execute_tools null-safety (defensive None check)
 # ──────────────────────────────────────────────────
 
-async def test_execute_tools_null_safety():
+async def _test_execute_tools_null_safety_impl():
     print("\n--- Execute Tools Null Safety Tests ---")
 
     # Test that _execute_tools never returns None elements.
@@ -696,11 +745,15 @@ async def test_execute_tools_null_safety():
                 check("Tool result has tool_id", hasattr(r, 'tool_id') and r.tool_id != "")
 
 
+def test_execute_tools_null_safety():
+    run(_test_execute_tools_null_safety_impl())
+
+
 # ──────────────────────────────────────────────────
 # Test 10: run_stream() truncation recovery
 # ──────────────────────────────────────────────────
 
-async def test_stream_truncation_recovery():
+async def _test_stream_truncation_recovery_impl():
     print("\n--- Stream Truncation Recovery Tests ---")
 
     # Simulate: first call truncated (max_tokens, no tool calls),
@@ -732,11 +785,15 @@ async def test_stream_truncation_recovery():
     )
 
 
+def test_stream_truncation_recovery():
+    run(_test_stream_truncation_recovery_impl())
+
+
 # ──────────────────────────────────────────────────
 # Test 11: run_stream() has intent nudge capability
 # ──────────────────────────────────────────────────
 
-async def test_stream_intent_nudge():
+async def _test_stream_intent_nudge_impl():
     print("\n--- Stream Intent Nudge Tests ---")
 
     # Test that _detect_unfulfilled_intent works correctly
@@ -762,6 +819,10 @@ async def test_stream_intent_nudge():
     check("No false positive on empty text", intent4 is None)
 
 
+def test_stream_intent_nudge():
+    run(_test_stream_intent_nudge_impl())
+
+
 # ──────────────────────────────────────────────────
 # Run all tests
 # ──────────────────────────────────────────────────
@@ -771,20 +832,20 @@ async def main():
     print("  P1 Feature Tests")
     print("=" * 60)
 
-    await test_circuit_breaker()
-    await test_empty_response()
-    await test_circular_loop()
-    await test_circuit_breaker_vs_loop_independence()
-    await test_result_ordering()
-    await test_policy_block_not_counted()
-    await test_network_retry()
-    await test_streaming()
-    await test_task_persistence()
-    await test_agent_stream()
-    await test_plan_mode_exit_allowed()
-    await test_execute_tools_null_safety()
-    await test_stream_truncation_recovery()
-    await test_stream_intent_nudge()
+    await _test_circuit_breaker_impl()
+    await _test_empty_response_impl()
+    await _test_circular_loop_impl()
+    await _test_circuit_breaker_vs_loop_independence_impl()
+    await _test_result_ordering_impl()
+    await _test_policy_block_not_counted_impl()
+    await _test_network_retry_impl()
+    await _test_streaming_impl()
+    await _test_task_persistence_impl()
+    await _test_agent_stream_impl()
+    await _test_plan_mode_exit_allowed_impl()
+    await _test_execute_tools_null_safety_impl()
+    await _test_stream_truncation_recovery_impl()
+    await _test_stream_intent_nudge_impl()
 
     print("\n" + "=" * 60)
     total = passed + failed

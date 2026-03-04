@@ -48,6 +48,17 @@ ALLOWED_IMPORTS = {
     "pathlib", "copy", "time", "uuid",
 }
 
+# H-12: Restricted builtin functions for sandbox execution
+RESTRICTED_BUILTINS = {
+    'abs', 'all', 'any', 'bool', 'dict', 'enumerate', 'filter',
+    'float', 'frozenset', 'hasattr', 'int', 'isinstance', 'issubclass',
+    'len', 'list', 'map', 'max', 'min', 'next', 'print', 'range',
+    'repr', 'reversed', 'round', 'set', 'sorted', 'str', 'sum',
+    'tuple', 'type', 'zip', 'format', 'hex', 'oct', 'bin', 'ord',
+    'chr', 'slice', 'hash', 'id', 'iter', 'callable', 'divmod',
+    'pow', '__build_class__',
+}
+
 
 # ── Dataclasses ──────────────────────────────────────────────────
 
@@ -212,7 +223,11 @@ class GeneratedTool:
 
     @staticmethod
     def _build_namespace() -> dict:
-        """Build a restricted execution namespace."""
+        """Build a restricted execution namespace.
+
+        H-12: Uses a whitelist of safe builtins to prevent sandbox escapes.
+        Dangerous builtins (eval, exec, __import__, etc.) are excluded.
+        """
         import json as _json
         import re as _re
         import math as _math
@@ -224,23 +239,12 @@ class GeneratedTool:
         import copy as _copy
         import time as _time
 
-        safe_builtins = {
-            "abs", "all", "any", "bin", "bool", "bytes", "callable",
-            "chr", "dict", "divmod", "enumerate", "filter", "float",
-            "format", "frozenset", "hash", "hex", "id", "int",
-            "isinstance", "issubclass", "iter", "len", "list", "map",
-            "max", "min", "next", "oct", "ord", "pow", "print",
-            "range", "repr", "reversed", "round", "set", "slice",
-            "sorted", "str", "sum", "tuple", "type", "zip",
-        }
-
         import builtins
-        restricted_builtins = {
-            k: getattr(builtins, k)
-            for k in safe_builtins
-            if hasattr(builtins, k)
-        }
-        restricted_builtins["__build_class__"] = builtins.__build_class__
+        # H-12: Build restricted builtins from whitelist
+        restricted_builtins = {}
+        for name in RESTRICTED_BUILTINS:
+            if hasattr(builtins, name):
+                restricted_builtins[name] = getattr(builtins, name)
 
         return {
             "__builtins__": restricted_builtins,
@@ -264,11 +268,16 @@ class GeneratedTool:
         validate_code() safety checks, and the namespace has restricted
         builtins (no eval/exec/import/etc). This method exists to
         encapsulate the necessary code execution mechanism.
+
+        H-12: Uses the global 'exec' function with a restricted namespace.
+        The namespace's __builtins__ dictionary ensures only safe functions
+        are available to the executed code.
         """
         compiled = compile(code_string, "<generated_tool>", "exec")
         # Intentional sandboxed execution of validated code
-        _executor = __builtins__["exec"] if isinstance(__builtins__, dict) else getattr(__builtins__, "exec")
-        _executor(compiled, namespace)
+        # Note: we use the unrestricted exec to run the compiled code,
+        # but the namespace's __builtins__ restricts what the code can access
+        exec(compiled, namespace)
 
 
 # ── ToolGenerator ────────────────────────────────────────────────

@@ -48,13 +48,41 @@ class WriteTool(BaseTool):
                 f"file_path must be absolute, got: {file_path}", tool_id
             )
 
-        # SEC-HIGH-3: Reject excessively deep paths
-        if len(path.parts) > self.MAX_DIR_DEPTH:
+        # H-11: Resolve symlinks to prevent symlink-based path traversal
+        try:
+            resolved_path = path.resolve()
+        except (OSError, RuntimeError) as e:
             return self._error(
-                f"Path too deep ({len(path.parts)} levels). "
+                f"Failed to resolve path: {str(e)}", tool_id
+            )
+
+        # H-11: Check for .. in resolved path parts (defense in depth)
+        path_str = str(resolved_path)
+        if ".." in path_str or path_str != resolved_path.as_posix():
+            return self._error(
+                f"Path traversal detected in resolved path: {file_path}", tool_id
+            )
+
+        # SEC-HIGH-3: Reject excessively deep paths (check resolved path)
+        if len(resolved_path.parts) > self.MAX_DIR_DEPTH:
+            return self._error(
+                f"Path too deep ({len(resolved_path.parts)} levels). "
                 f"Maximum allowed depth: {self.MAX_DIR_DEPTH}",
                 tool_id,
             )
+
+        # H-11: Verify resolved path is still within allowed directories
+        # if workspace_dir is specified
+        if self._workspace_dir:
+            workspace_resolved = Path(self._workspace_dir).resolve()
+            try:
+                resolved_path.relative_to(workspace_resolved)
+            except ValueError:
+                return self._error(
+                    f"Path escapes workspace directory: {file_path}", tool_id
+                )
+
+        path = resolved_path
 
         try:
             # Create parent directories if they don't exist

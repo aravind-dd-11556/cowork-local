@@ -4,13 +4,16 @@
   "version": "1.0.0",
   "description": "WebSocket bridge connecting Open-Cowork agent to Chrome for browser automation",
   "permissions": [
-    "tabs",
     "activeTab",
     "scripting",
-    "debugger"
+    "debugger",
+    "storage"
   ],
   "host_permissions": [
     "http://localhost/*",
+    "ws://localhost/*"
+  ],
+  "optional_host_permissions": [
     "<all_urls>"
   ],
   "background": {
@@ -24,6 +27,9 @@
       "run_at": "document_idle"
     }
   ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'"
+  },
   "action": {
     "default_popup": "popup.html",
     "default_title": "Open-Cowork Bridge"

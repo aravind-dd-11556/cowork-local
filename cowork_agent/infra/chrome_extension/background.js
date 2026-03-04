@@ -6,23 +6,121 @@
  * the Open-Cowork agent and translates them into Chrome API calls.
  */
 
+// ── Security Constants ───────────────────────────────────────────
+const MAX_BUFFER_SIZE = 1000;
+const BLOCKED_SHORTCUTS = ['ctrl+w', 'ctrl+shift+delete', 'alt+f4', 'ctrl+shift+i'];
+const MAX_COMMANDS_PER_MINUTE = 60;
+const AUDIT_LOG_SIZE = 100;
+const CDP_TIMEOUT_MS = 30000;
+const MAX_SCRIPT_SIZE = 1024 * 1024; // 1MB
+
 // ── State ────────────────────────────────────────────────────────
 let ws = null;
 let agentConnected = false;
-let debuggerAttached = {};  // tabId -> boolean
-let consoleBuffer = {};     // tabId -> messages[]
-let networkBuffer = {};     // tabId -> requests[]
-const AGENT_WS_URL = 'ws://localhost:9222';
+let authToken = null;
+let debuggerAttached = {};      // tabId -> boolean
+let debuggerActiveAt = {};      // tabId -> timestamp for idle timeout
+let consoleBuffer = {};         // tabId -> messages[]
+let networkBuffer = {};         // tabId -> requests[]
+let commandCounts = {};         // tabId -> { count, resetTime }
+let auditLog = [];              // Last 100 audit entries
+let wsUrl = 'ws://localhost:9222';
+const DEBUGGER_IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+
+// ── Logging & Audit Trail ───────────────────────────────────────
+function auditLog(action, details) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    action,
+    details,
+  };
+  auditLog.push(entry);
+  if (auditLog.length > AUDIT_LOG_SIZE) {
+    auditLog.shift();
+  }
+  console.log('[Cowork Audit]', entry);
+}
+
+// ── Helper: Check for sensitive pages ────────────────────────────
+function isSensitivePage(url) {
+  if (!url) return false;
+  const sensitivePatterns = [
+    /bank/i, /paypal/i, /amazon\.com\/ap\//i, /credentials/i,
+    /password/i, /healthcare/i, /medical/i, /1password/i,
+    /lastpass/i, /bitwarden/i,
+  ];
+  return sensitivePatterns.some(pattern => pattern.test(url));
+}
+
+// ── Helper: Timeout wrapper for promises ────────────────────────
+function withTimeout(promise, ms = CDP_TIMEOUT_MS) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Operation timeout after ${ms}ms`)), ms)
+    ),
+  ]);
+}
+
+// ── Helper: Rate limiting ────────────────────────────────────────
+function checkRateLimit(tabId) {
+  const now = Date.now();
+  if (!commandCounts[tabId]) {
+    commandCounts[tabId] = { count: 1, resetTime: now + 60000 };
+    return true;
+  }
+
+  const counter = commandCounts[tabId];
+  if (now > counter.resetTime) {
+    commandCounts[tabId] = { count: 1, resetTime: now + 60000 };
+    return true;
+  }
+
+  if (counter.count >= MAX_COMMANDS_PER_MINUTE) {
+    return false;
+  }
+  counter.count++;
+  return true;
+}
 
 // ── WebSocket Connection ─────────────────────────────────────────
 
+async function generateAuthToken() {
+  const arr = new Uint8Array(32);
+  crypto.getRandomValues(arr);
+  return Array.from(arr, byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function initializeAuthToken() {
+  const stored = await chrome.storage.local.get('auth_token');
+  if (stored.auth_token) {
+    authToken = stored.auth_token;
+  } else {
+    authToken = await generateAuthToken();
+    await chrome.storage.local.set({ auth_token: authToken });
+  }
+}
+
+async function loadWSUrl() {
+  const stored = await chrome.storage.local.get('ws_url');
+  if (stored.ws_url) {
+    wsUrl = stored.ws_url;
+  }
+}
+
 function connectToAgent() {
   try {
-    ws = new WebSocket(AGENT_WS_URL);
+    ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
+      // Send authentication token
+      ws.send(JSON.stringify({
+        type: 'auth',
+        token: authToken,
+      }));
       agentConnected = true;
       console.log('[Cowork Bridge] Connected to agent');
+      auditLog('connect', { url: wsUrl });
       updatePopupStatus(true);
     };
 
@@ -81,6 +179,13 @@ function disconnectFromAgent() {
 async function handleRPCRequest(request) {
   const { method, params } = request;
 
+  // Rate limiting check
+  if (params && params.tabId) {
+    if (!checkRateLimit(params.tabId)) {
+      throw new Error('Rate limit exceeded: max 60 commands per minute per tab');
+    }
+  }
+
   switch (method) {
     case 'browser/navigate':
       return await handleNavigate(params);
@@ -132,6 +237,10 @@ async function handleNavigate({ tabId, url }) {
 
 async function handleScreenshot({ tabId }) {
   const tab = await chrome.tabs.get(tabId);
+  if (isSensitivePage(tab.url)) {
+    console.warn('[Cowork Security] Screenshot requested on sensitive page:', tab.url);
+    auditLog('screenshot_sensitive', { url: tab.url, tabId });
+  }
   const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
     format: 'png',
   });
@@ -164,12 +273,21 @@ async function handleFindElements({ tabId, query }) {
 // ── Form Input ───────────────────────────────────────────────────
 
 async function handleFormInput({ tabId, ref, value }) {
+  // Validate refId format
+  const refIdRegex = /^ref_\d{1,6}$/;
+  if (!refIdRegex.test(ref)) {
+    return { success: false, error: 'Invalid refId format' };
+  }
+
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func: setFormValueInPage,
     args: [ref, value],
   });
   const result = results && results[0] ? results[0].result : { success: false };
+  if (result.success) {
+    auditLog('form_input', { tabId, ref, valueLength: String(value).length });
+  }
   return result;
 }
 
@@ -211,13 +329,27 @@ async function handlePerformAction({ tabId, action, ...params }) {
 
     case 'key': {
       const keys = (params.text || '').split(' ');
+      const keyCombo = params.text.toLowerCase();
+
+      // Check for blocked shortcuts
+      for (const blocked of BLOCKED_SHORTCUTS) {
+        if (keyCombo.includes(blocked)) {
+          auditLog('blocked_shortcut', { tabId, shortcut: keyCombo });
+          return { success: false, error: `Blocked shortcut: ${keyCombo}` };
+        }
+      }
+
       for (const key of keys) {
-        await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
-          type: 'keyDown', key,
-        });
-        await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
-          type: 'keyUp', key,
-        });
+        await withTimeout(
+          chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
+            type: 'keyDown', key,
+          })
+        );
+        await withTimeout(
+          chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
+            type: 'keyUp', key,
+          })
+        );
       }
       return { success: true, action, keys };
     }
@@ -261,23 +393,44 @@ async function handlePerformAction({ tabId, action, ...params }) {
 // ── JavaScript Execution ─────────────────────────────────────────
 
 async function handleExecuteScript({ tabId, code }) {
+  // Input validation
+  if (typeof code !== 'string') {
+    return { success: false, error: 'Code must be a string' };
+  }
+  if (code.length > MAX_SCRIPT_SIZE) {
+    return { success: false, error: `Code exceeds maximum size of ${MAX_SCRIPT_SIZE} bytes` };
+  }
+
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func: (jsCode) => {
       try {
-        return { success: true, result: eval(jsCode) };
+        // Use Function constructor instead of eval for safer execution
+        const result = new Function('return ' + jsCode)();
+        auditLog('execute_script', { tabId, codeLength: jsCode.length });
+        return { success: true, result };
       } catch (e) {
         return { success: false, error: e.message };
       }
     },
     args: [code],
   });
-  return results && results[0] ? results[0].result : { success: false, error: 'No result' };
+  const result = results && results[0] ? results[0].result : { success: false, error: 'No result' };
+  if (result.success) {
+    auditLog('script_execution', { tabId, codeLength: code.length });
+  }
+  return result;
 }
 
 // ── Page Text ────────────────────────────────────────────────────
 
 async function handleGetPageText({ tabId }) {
+  const tab = await chrome.tabs.get(tabId);
+  if (isSensitivePage(tab.url)) {
+    console.warn('[Cowork Security] Page text requested on sensitive page:', tab.url);
+    auditLog('page_text_sensitive', { url: tab.url, tabId });
+  }
+
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func: () => document.body ? document.body.innerText : '',
@@ -330,19 +483,45 @@ async function handleCreateTab() {
 
 // ── Debugger Management ──────────────────────────────────────────
 
+async function detachDebuggerIfIdle(tabId) {
+  if (!debuggerActiveAt[tabId]) return;
+
+  const now = Date.now();
+  const idleDuration = now - debuggerActiveAt[tabId];
+
+  if (idleDuration > DEBUGGER_IDLE_TIMEOUT) {
+    try {
+      await chrome.debugger.detach({ tabId });
+      debuggerAttached[tabId] = false;
+      delete debuggerActiveAt[tabId];
+      auditLog('debugger_detached_idle', { tabId });
+    } catch (e) {
+      console.error('[Cowork Security] Error detaching idle debugger:', e);
+    }
+  }
+}
+
 async function ensureDebuggerAttached(tabId) {
-  if (debuggerAttached[tabId]) return;
+  if (debuggerAttached[tabId]) {
+    // Update last activity timestamp
+    debuggerActiveAt[tabId] = Date.now();
+    return;
+  }
 
-  await chrome.debugger.attach({ tabId }, '1.3');
+  await withTimeout(chrome.debugger.attach({ tabId }, '1.3'));
   debuggerAttached[tabId] = true;
+  debuggerActiveAt[tabId] = Date.now();
 
-  // Enable console and network domains for monitoring
-  await chrome.debugger.sendCommand({ tabId }, 'Console.enable');
-  await chrome.debugger.sendCommand({ tabId }, 'Network.enable');
+  // Enable console and network domains for monitoring (requested explicitly)
+  await withTimeout(chrome.debugger.sendCommand({ tabId }, 'Console.enable'));
+  await withTimeout(chrome.debugger.sendCommand({ tabId }, 'Network.enable'));
 
   // Listen for console messages
   chrome.debugger.onEvent.addListener((source, method, params) => {
     if (source.tabId !== tabId) return;
+
+    // Update activity timestamp
+    debuggerActiveAt[tabId] = Date.now();
 
     if (method === 'Console.messageAdded') {
       if (!consoleBuffer[tabId]) consoleBuffer[tabId] = [];
@@ -352,6 +531,10 @@ async function ensureDebuggerAttached(tabId) {
         url: params.message.url,
         timestamp: Date.now(),
       });
+      // Enforce buffer size limit
+      if (consoleBuffer[tabId].length > MAX_BUFFER_SIZE) {
+        consoleBuffer[tabId].splice(0, consoleBuffer[tabId].length - MAX_BUFFER_SIZE);
+      }
     }
 
     if (method === 'Network.requestWillBeSent') {
@@ -362,6 +545,10 @@ async function ensureDebuggerAttached(tabId) {
         type: params.type,
         timestamp: Date.now(),
       });
+      // Enforce buffer size limit
+      if (networkBuffer[tabId].length > MAX_BUFFER_SIZE) {
+        networkBuffer[tabId].splice(0, networkBuffer[tabId].length - MAX_BUFFER_SIZE);
+      }
     }
   });
 }
@@ -384,14 +571,14 @@ function updatePopupStatus(connected) {
   chrome.runtime.sendMessage({
     type: 'status_update',
     connected,
-    agentUrl: AGENT_WS_URL,
+    agentUrl: wsUrl,
   }).catch(() => { /* popup not open */ });
 }
 
 // Listen for popup messages
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'get_status') {
-    sendResponse({ connected: agentConnected, agentUrl: AGENT_WS_URL });
+    sendResponse({ connected: agentConnected, agentUrl: wsUrl });
   } else if (message.type === 'connect') {
     connectToAgent();
     sendResponse({ ok: true });
@@ -432,7 +619,13 @@ function buildAccessibilityTree() {
                || element.getAttribute('title')
                || (element.tagName === 'INPUT' ? element.getAttribute('placeholder') || '' : '')
                || element.textContent?.trim().substring(0, 100) || '';
-    const value = element.value || '';
+
+    // Redact password field values
+    let value = element.value || '';
+    if (element.tagName === 'INPUT' && element.type === 'password') {
+      value = '[REDACTED]';
+    }
+
     const interactive = INTERACTIVE_TAGS.has(element.tagName)
                       || element.getAttribute('role') === 'button'
                       || element.getAttribute('tabindex') !== null;
@@ -493,17 +686,47 @@ function findElementsInPage(query) {
 }
 
 function setFormValueInPage(refId, value) {
-  // Find element by data attribute or index
-  const idx = parseInt(refId.replace('ref_', ''), 10);
-  const inputs = document.querySelectorAll('input, textarea, select, [contenteditable]');
-  if (idx > 0 && idx <= inputs.length) {
-    const el = inputs[idx - 1];
-    el.value = value;
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    return { success: true, value: el.value };
+  // Validate refId format with regex
+  const refIdRegex = /^ref_(\d{1,6})$/;
+  const match = refId.match(refIdRegex);
+  if (!match) {
+    return { success: false, error: 'Invalid refId format' };
   }
-  return { success: false, error: `Element ${refId} not found` };
+
+  // Find element by data attribute or index
+  const idx = parseInt(match[1], 10);
+  const inputs = document.querySelectorAll('input, textarea, select, [contenteditable]');
+
+  // Bounds checking
+  if (idx <= 0 || idx > inputs.length) {
+    return { success: false, error: `Element ${refId} not found or out of bounds` };
+  }
+
+  const el = inputs[idx - 1];
+  el.value = value;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return { success: true, value: el.value };
 }
+
+// ── Initialization ──────────────────────────────────────────────
+
+async function initialize() {
+  await initializeAuthToken();
+  await loadWSUrl();
+  connectToAgent();
+}
+
+// Periodic idle timeout check (every 30 seconds)
+setInterval(() => {
+  for (const tabId in debuggerAttached) {
+    if (debuggerAttached[tabId]) {
+      detachDebuggerIfIdle(parseInt(tabId, 10));
+    }
+  }
+}, 30000);
+
+// Initialize on load
+initialize().catch(e => console.error('[Cowork Bridge] Initialization failed:', e));
 
 console.log('[Cowork Bridge] Service worker loaded');

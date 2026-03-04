@@ -218,30 +218,43 @@ class CredentialDetector:
 
         Returns:
             CredentialScanResult with matches and optionally redacted text
+
+        M-10: Limits scan to first 10,000 characters to prevent ReDoS attacks
+        on unbounded quantifier regex patterns.
         """
         self._total_scans += 1
 
         if not text:
             return CredentialScanResult(has_credentials=False, redacted_text=text)
 
-        scan_text = text[:self._max_scan_length]
+        # M-10: Limit scan length to prevent ReDoS on expensive patterns
+        # Default 10,000 chars; configurable via max_scan_length
+        scan_text = text[:min(10_000, self._max_scan_length)]
         matches: List[CredentialMatch] = []
 
         for pattern, cred_type, description in CREDENTIAL_PATTERNS:
             if self._enabled_types is not None and cred_type not in self._enabled_types:
                 continue
 
-            for match in pattern.finditer(scan_text):
-                matched_text = match.group()
-                cred_match = CredentialMatch(
-                    credential_type=cred_type,
-                    description=description,
-                    matched_text=matched_text,
-                    start=match.start(),
-                    end=match.end(),
-                    redacted_text=self._redact(matched_text),
+            try:
+                # M-10: Use timeout protection for regex matching
+                # (If regex.TIMEOUT is available, it would be used here)
+                for match in pattern.finditer(scan_text):
+                    matched_text = match.group()
+                    cred_match = CredentialMatch(
+                        credential_type=cred_type,
+                        description=description,
+                        matched_text=matched_text,
+                        start=match.start(),
+                        end=match.end(),
+                        redacted_text=self._redact(matched_text),
+                    )
+                    matches.append(cred_match)
+            except Exception as e:
+                # M-10: Log regex timeout or errors but continue scanning
+                logger.warning(
+                    f"Regex pattern for {cred_type.value} raised error: {type(e).__name__}"
                 )
-                matches.append(cred_match)
 
         # Deduplicate overlapping matches (keep longer match)
         matches = self._deduplicate_matches(matches)

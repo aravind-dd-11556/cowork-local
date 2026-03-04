@@ -13,11 +13,19 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+import secrets
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Input size and buffer limits for security
+MAX_JS_CODE_SIZE = 1_048_576  # 1MB
+MAX_FORM_VALUE_SIZE = 10_240  # 10KB
+MAX_TEXT_INPUT_SIZE = 102_400  # 100KB
+MAX_COORDINATE_VALUE = 100_000  # pixels
+MAX_BUFFER_SIZE = 1000  # Max console messages/network requests per tab
 
 
 class PageLoadState(Enum):
@@ -114,6 +122,18 @@ class TabInfo:
             "viewport": f"{self.viewport_width}x{self.viewport_height}",
         }
 
+    def add_console_message(self, message: Dict[str, Any]) -> None:
+        """Add a console message, maintaining MAX_BUFFER_SIZE limit."""
+        self.console_messages.append(message)
+        if len(self.console_messages) > MAX_BUFFER_SIZE:
+            self.console_messages = self.console_messages[-MAX_BUFFER_SIZE:]
+
+    def add_network_request(self, request: Dict[str, Any]) -> None:
+        """Add a network request, maintaining MAX_BUFFER_SIZE limit."""
+        self.network_requests.append(request)
+        if len(self.network_requests) > MAX_BUFFER_SIZE:
+            self.network_requests = self.network_requests[-MAX_BUFFER_SIZE:]
+
 
 @dataclass
 class TabGroup:
@@ -202,8 +222,8 @@ class BrowserSession:
         if not create_if_empty:
             return None
 
-        # Create new group with one blank tab
-        group_id = f"group_{uuid.uuid4().hex[:8]}"
+        # Create new group with one blank tab using secure random ID
+        group_id = f"group_{secrets.token_hex(16)}"
         group = TabGroup(group_id=group_id)
         self._groups[group_id] = group
         self._active_group_id = group_id
@@ -495,6 +515,15 @@ class BrowserSession:
         if not tab or not tab.accessibility_tree:
             return False, "No accessibility tree available. Call read_page first."
 
+        # Validate value size
+        try:
+            import json
+            serialized = json.dumps(value)
+            if len(serialized.encode()) > MAX_FORM_VALUE_SIZE:
+                return False, f"Form value exceeds maximum size of {MAX_FORM_VALUE_SIZE} bytes."
+        except (TypeError, ValueError):
+            return False, "Form value must be JSON serializable."
+
         node = self._find_node(tab.accessibility_tree, ref_id)
         if not node:
             return False, f"Element with ref_id '{ref_id}' not found."
@@ -545,6 +574,26 @@ class BrowserSession:
         tab = self.get_tab(tab_id)
         if not tab:
             return False, f"Tab {tab_id} not found."
+
+        # Validate coordinate bounds
+        if coordinate:
+            if len(coordinate) != 2:
+                return False, "Coordinate must be a tuple of (x, y)."
+            for coord_val in coordinate:
+                if not isinstance(coord_val, (int, float)) or coord_val > MAX_COORDINATE_VALUE:
+                    return False, f"Coordinate values must not exceed {MAX_COORDINATE_VALUE}."
+
+        # Validate region bounds
+        if region:
+            if len(region) != 4:
+                return False, "Region must be a tuple of (x0, y0, x1, y1)."
+            for coord_val in region:
+                if not isinstance(coord_val, (int, float)) or coord_val > MAX_COORDINATE_VALUE:
+                    return False, f"Region values must not exceed {MAX_COORDINATE_VALUE}."
+
+        # Validate text length
+        if text and len(text) > MAX_TEXT_INPUT_SIZE:
+            return False, f"Text input exceeds maximum size of {MAX_TEXT_INPUT_SIZE} chars."
 
         action = action.lower()
 
@@ -640,6 +689,41 @@ class BrowserSession:
         if coordinate:
             return f"({coordinate[0]}, {coordinate[1]})"
         return None
+
+    # ── JavaScript Execution ──────────────────────────────────────────
+
+    def execute_js(self, tab_id: int, code: str) -> Tuple[bool, str]:
+        """
+        Execute JavaScript code in the browser tab.
+
+        Validates callback is callable and logs execution attempts.
+        """
+        tab = self.get_tab(tab_id)
+        if not tab:
+            return False, f"Tab {tab_id} not found."
+
+        # Validate code size
+        if len(code) > MAX_JS_CODE_SIZE:
+            return False, f"JavaScript code exceeds maximum size of {MAX_JS_CODE_SIZE} bytes."
+
+        # Check if callback is available and callable
+        if self._on_js_execute is None:
+            return False, "No JavaScript execution callback configured."
+
+        if not callable(self._on_js_execute):
+            logger.error("JS execution callback is not callable")
+            return False, "JavaScript execution callback is not properly configured."
+
+        # Log execution attempt
+        logger.info(f"JS execution requested on tab {tab_id}, code length: {len(code)}")
+
+        # Invoke callback
+        try:
+            result = self._on_js_execute(tab_id, code)
+            return True, f"JavaScript executed successfully (result type: {type(result).__name__})."
+        except Exception as e:
+            logger.debug("JS execution failed: %s", e)
+            return False, "JavaScript execution failed."
 
     # ── Window Resize ─────────────────────────────────────────────────
 

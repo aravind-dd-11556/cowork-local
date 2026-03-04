@@ -6,8 +6,13 @@ llm:
   temperature: 0.7
   max_tokens: 16384
 
+# M-7: Provider Configuration
+# SECURITY: The localhost URLs below are development defaults only.
+# Override these in production via environment variables or config files.
 providers:
   ollama:
+    # Development default: http://localhost:11434
+    # SECURITY: Override via OLLAMA_BASE_URL environment variable in production
     base_url: "http://localhost:11434"
     timeout: 300
 
@@ -86,9 +91,11 @@ mcp:
   servers: []
 
 # Sprint 46: Chrome Extension Bridge
+# SECURITY: The localhost WebSocket URL below is a development default.
+# Override via CHROME_BRIDGE_WS_URL environment variable in production.
 chrome_bridge:
   enabled: false
-  ws_url: "ws://localhost:9222"
+  ws_url: "ws://localhost:9222"  # Development default only
   connect_timeout: 10.0
   request_timeout: 30.0
   auto_reconnect: true
