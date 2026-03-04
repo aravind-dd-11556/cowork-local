@@ -18,42 +18,57 @@ A modular AI agent framework inspired by Anthropic's Cowork mode — built with 
 ```bash
 cd cowork_agent
 
-# Core dependencies (required)
-pip install pyyaml httpx
-
-# If using OpenAI provider
-pip install openai
-
-# If using Anthropic provider
-pip install anthropic
-
-# If using web search/fetch tools (optional)
-pip install trafilatura markdownify beautifulsoup4 lxml
-
-# If using API/dashboard mode (optional)
-pip install fastapi uvicorn websockets
+# Install all dependencies at once (recommended)
+pip install -r requirements.txt
 ```
 
-Or install everything at once:
+Or install selectively:
 
 ```bash
-pip install -r requirements.txt
+# Core only (required)
+pip install pyyaml httpx
+
+# LLM providers
+pip install openai anthropic
+
+# Web tools (search & fetch)
+pip install trafilatura markdownify beautifulsoup4 lxml
+
+# API & dashboard mode
+pip install fastapi uvicorn websockets
+
+# Skill dependencies (presentations, spreadsheets, PDFs, Word docs)
+pip install python-pptx Pillow requests openpyxl pandas pdfplumber pypdf reportlab python-docx
+
+# Security (encrypted credential store)
+pip install cryptography
 ```
 
 ### 3. Configure Your LLM Provider
 
 The agent reads from `cowork_agent/config/default_config.yaml`. You can override settings via environment variables or a custom config file.
 
-**Option A — Ollama (default, no API key needed):**
+**Option A — Ollama (default):**
+
+Ollama supports both **local models** (free, no API key) and **cloud models** (hosted remotely, require an API key).
 
 ```bash
-# Install and start Ollama, then pull a model
-ollama pull qwen3-vl:235b-instruct-cloud
+# Install and start Ollama
+# https://ollama.com/download
 
-# Or use any other model
+# ── Local models (free, no API key needed) ──
 ollama pull llama3.1
 export OLLAMA_MODEL="llama3.1"
+
+# ── Cloud models (require OLLAMA_API_KEY) ──
+# Models with a "-cloud" suffix run on remote servers and need an API key.
+# Get your key from https://ollama.com/settings/keys
+export OLLAMA_API_KEY="your-ollama-api-key"
+ollama pull qwen3-vl:235b-instruct-cloud
+export OLLAMA_MODEL="qwen3-vl:235b-instruct-cloud"
 ```
+
+> **Note:** The default model in `default_config.yaml` is `qwen3-vl:235b-instruct-cloud` — a cloud model. Either set `OLLAMA_API_KEY` or switch to a local model like `llama3.1`.
 
 **Option B — OpenAI:**
 
@@ -148,6 +163,7 @@ pip install trafilatura markdownify beautifulsoup4 lxml
 |----------|---------|-------------|
 | `SEARXNG_BASE_URL` | `http://localhost:8888` | SearXNG instance URL |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama instance URL |
+| `OLLAMA_API_KEY` | — | API key for Ollama cloud models (models with `-cloud` suffix) |
 | `OLLAMA_MODEL` | `qwen3-vl:235b-instruct-cloud` | Model for content processing |
 | `FETCH_TIMEOUT` | `30` | HTTP fetch timeout (seconds) |
 | `CACHE_TTL_SECONDS` | `900` | URL cache duration (15 min) |
@@ -758,6 +774,7 @@ All settings can be set via `default_config.yaml`, a custom YAML file (`-c`), or
 | `COWORK_LLM_MODEL` | `llm.model` | `qwen3-vl:235b-instruct-cloud` | Model name |
 | `COWORK_LLM_TEMPERATURE` | `llm.temperature` | `0.7` | Sampling temperature |
 | `OLLAMA_BASE_URL` | `providers.ollama.base_url` | `http://localhost:11434` | Ollama server URL |
+| `OLLAMA_API_KEY` | `providers.ollama.api_key` | — | API key for Ollama cloud models (`-cloud` suffix) |
 | `OPENAI_API_KEY` | `providers.openai.api_key` | — | OpenAI API key |
 | `ANTHROPIC_API_KEY` | `providers.anthropic.api_key` | — | Anthropic API key |
 | `OPENROUTER_API_KEY` | `providers.openrouter.api_key` | — | OpenRouter API key |
