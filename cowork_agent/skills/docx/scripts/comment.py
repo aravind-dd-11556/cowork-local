@@ -76,6 +76,7 @@ def add_comment(docx_path: str, text: str, author: str = "Cowork Agent",
     return out
 
 def main():
+    """CLI entry point for listing or adding comments in a .docx file."""
     if len(sys.argv) < 3:
         print("Usage:")
         print("  python comment.py list <file.docx>")

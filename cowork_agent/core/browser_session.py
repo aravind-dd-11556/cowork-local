@@ -45,6 +45,7 @@ class AccessibilityNode:
     bounds: Optional[Tuple[int, int, int, int]] = None  # (x, y, width, height)
 
     def to_dict(self) -> dict:
+        """Serialize this node to a JSON-compatible dictionary."""
         d = {
             "ref_id": self.ref_id,
             "role": self.role,
@@ -103,6 +104,7 @@ class TabInfo:
     last_screenshot_id: Optional[str] = None
 
     def to_dict(self) -> dict:
+        """Serialize tab info to a JSON-compatible dictionary."""
         return {
             "tab_id": self.tab_id,
             "group_id": self.group_id,
@@ -122,11 +124,29 @@ class TabGroup:
 
     @property
     def tab_ids(self) -> List[int]:
+        """Return sorted list of tab IDs in this group."""
         return sorted(self.tabs.keys())
 
     @property
     def tab_count(self) -> int:
+        """Return the number of tabs in this group."""
         return len(self.tabs)
+
+
+@dataclass
+class BrowserCallbacks:
+    """Optional callback hooks for Chrome bridge integration (Sprint 46)."""
+    on_navigate: Optional[Callable] = None
+    on_screenshot: Optional[Callable] = None
+    on_get_tree: Optional[Callable] = None
+    on_find: Optional[Callable] = None
+    on_form_input: Optional[Callable] = None
+    on_perform_action: Optional[Callable] = None
+    on_js_execute: Optional[Callable] = None
+    on_get_text: Optional[Callable] = None
+    on_read_console: Optional[Callable] = None
+    on_read_network: Optional[Callable] = None
+    on_resize: Optional[Callable] = None
 
 
 class BrowserSession:
@@ -153,6 +173,7 @@ class BrowserSession:
         on_read_network: Optional[Callable] = None,
         on_resize: Optional[Callable] = None,
     ):
+        """Initialize BrowserSession with optional Chrome bridge callbacks."""
         self._groups: Dict[str, TabGroup] = {}
         self._next_tab_id = 1
         self._default_viewport = default_viewport
@@ -193,10 +214,12 @@ class BrowserSession:
         return group
 
     def get_group(self, group_id: str) -> Optional[TabGroup]:
+        """Look up a tab group by its ID."""
         return self._groups.get(group_id)
 
     @property
     def active_group(self) -> Optional[TabGroup]:
+        """Return the currently active tab group, if any."""
         if self._active_group_id:
             return self._groups.get(self._active_group_id)
         return None
@@ -564,20 +587,7 @@ class BrowserSession:
         if action == "scroll":
             if not scroll_direction:
                 return False, "No scroll_direction specified."
-            if scroll_direction not in ("up", "down", "left", "right"):
-                return False, f"Invalid scroll direction: {scroll_direction}"
-            dx, dy = 0, 0
-            if scroll_direction == "up":
-                dy = -scroll_amount * 100
-            elif scroll_direction == "down":
-                dy = scroll_amount * 100
-            elif scroll_direction == "left":
-                dx = -scroll_amount * 100
-            elif scroll_direction == "right":
-                dx = scroll_amount * 100
-            tab.scroll_x = max(0, tab.scroll_x + dx)
-            tab.scroll_y = max(0, tab.scroll_y + dy)
-            return True, f"Scrolled {scroll_direction} by {scroll_amount} ticks."
+            return self._handle_scroll(tab, scroll_direction, scroll_amount)
 
         if action == "scroll_to":
             if not ref:
@@ -595,6 +605,25 @@ class BrowserSession:
             return True, f"Dragged to {coordinate}."
 
         return False, f"Unknown action: {action}"
+
+    def _handle_scroll(
+        self, tab: "TabInfo", direction: str, amount: int,
+    ) -> Tuple[bool, str]:
+        """Handle scroll actions by updating tab scroll position."""
+        if direction not in ("up", "down", "left", "right"):
+            return False, f"Invalid scroll direction: {direction}"
+        dx, dy = 0, 0
+        if direction == "up":
+            dy = -amount * 100
+        elif direction == "down":
+            dy = amount * 100
+        elif direction == "left":
+            dx = -amount * 100
+        elif direction == "right":
+            dx = amount * 100
+        tab.scroll_x = max(0, tab.scroll_x + dx)
+        tab.scroll_y = max(0, tab.scroll_y + dy)
+        return True, f"Scrolled {direction} by {amount} ticks."
 
     def _resolve_target(
         self, tab: TabInfo,
@@ -649,6 +678,7 @@ class BrowserSession:
     # ── Cleanup ───────────────────────────────────────────────────────
 
     def close_tab(self, tab_id: int) -> bool:
+        """Close and remove a tab from its group."""
         group = self.active_group
         if group and tab_id in group.tabs:
             del group.tabs[tab_id]
@@ -656,6 +686,7 @@ class BrowserSession:
         return False
 
     def close_all(self) -> None:
+        """Close all tabs and remove all groups."""
         self._groups.clear()
         self._active_group_id = None
 

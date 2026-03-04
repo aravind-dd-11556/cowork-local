@@ -57,6 +57,7 @@ class ChromeBridge:
 
     @property
     def is_connected(self) -> bool:
+        """Whether the WebSocket connection to Chrome extension is active."""
         return self._client.is_connected
 
     async def connect(self) -> bool:

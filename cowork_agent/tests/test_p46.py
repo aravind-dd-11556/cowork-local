@@ -186,6 +186,7 @@ class TestChromeWSClientConnect(unittest.TestCase):
         from cowork_agent.core.chrome_ws_client import ChromeWSClient, ChromeWSConfig
 
         async def slow_connect(*args, **kwargs):
+            """Simulate a slow WebSocket connection."""
             await asyncio.sleep(10)
             return AsyncMock()
 
@@ -366,6 +367,7 @@ class TestChromeWSClientCall(unittest.TestCase):
 
         # Mock send to capture AND resolve
         async def mock_send(msg):
+            """Mock send that captures and resolves."""
             data = json.loads(msg)
             captured_msg['data'] = data
             request_id = data['id']
@@ -396,6 +398,7 @@ class TestChromeWSClientCall(unittest.TestCase):
 
         # Setup for call
         async def resolve_after_send(msg):
+            """Resolve pending future after send."""
             data = json.loads(msg)
             request_id = data['id']
             await asyncio.sleep(0.01)
@@ -423,6 +426,7 @@ class TestChromeWSClientCall(unittest.TestCase):
         run(client.connect())
 
         async def resolve_after_send(msg):
+            """Resolve pending future to verify creation."""
             data = json.loads(msg)
             request_id = data['id']
             self.assertIn(request_id, client._pending)
@@ -449,6 +453,7 @@ class TestChromeWSClientCall(unittest.TestCase):
         captured_msg = {}
 
         async def capture_send(msg):
+            """Capture sent message for parameter verification."""
             captured_msg['data'] = json.loads(msg)
             data = captured_msg['data']
             request_id = data['id']
@@ -478,6 +483,7 @@ class TestChromeWSClientCall(unittest.TestCase):
         captured_msg = {}
 
         async def capture_send(msg):
+            """Capture sent message for default param check."""
             captured_msg['data'] = json.loads(msg)
             data = captured_msg['data']
             request_id = data['id']
@@ -505,7 +511,7 @@ class TestChromeWSClientCall(unittest.TestCase):
         run(client.connect())
 
         async def never_respond(msg):
-            # Never respond, causing timeout
+            """Never respond, causing a timeout."""
             await asyncio.sleep(10)
 
         mock_ws.send = never_respond
@@ -528,6 +534,7 @@ class TestChromeWSClientCall(unittest.TestCase):
         sent_ids = []
 
         async def capture_and_respond(msg):
+            """Capture request ID and respond for concurrency test."""
             data = json.loads(msg)
             request_id = data['id']
             sent_ids.append(request_id)
@@ -538,6 +545,7 @@ class TestChromeWSClientCall(unittest.TestCase):
         mock_ws.send = capture_and_respond
 
         async def call_multiple():
+            """Call multiple RPC methods concurrently."""
             await asyncio.gather(
                 client.call("method1", {}),
                 client.call("method2", {}),
@@ -581,6 +589,7 @@ class TestChromeWSClientNotification(unittest.TestCase):
         captured_msg = {}
 
         async def capture_send(msg):
+            """Capture notification message format."""
             captured_msg['data'] = json.loads(msg)
 
         mock_ws.send = capture_send
@@ -607,6 +616,7 @@ class TestChromeWSClientNotification(unittest.TestCase):
         captured_msgs = []
 
         async def capture_send(msg):
+            """Capture multiple notification messages."""
             captured_msgs.append(json.loads(msg))
 
         mock_ws.send = capture_send
@@ -744,12 +754,14 @@ class TestChromeWSClientListenLoop(unittest.TestCase):
         client._reconnect_called = False
 
         async def fake_reconnect():
+            """Fake reconnect for testing."""
             client._reconnect_called = True
 
         client._reconnect = fake_reconnect
 
         # Simulate async iterator raising an error
         async def error_iterator():
+            """Simulate async iterator raising connection error."""
             raise ConnectionError("Connection lost")
 
         try:
@@ -1380,6 +1392,7 @@ class TestChromeBridgeActions(unittest.TestCase):
         from cowork_agent.core.chrome_bridge import ChromeBridge
 
         async def slow_call(*args, **kwargs):
+            """Simulate a slow RPC call for timeout test."""
             await asyncio.sleep(10)
 
         mock_client = AsyncMock()
@@ -1843,6 +1856,7 @@ class TestEdgeCases(unittest.TestCase):
         bridge._client = mock_client
 
         async def run_concurrent():
+            """Run multiple bridge calls concurrently."""
             return await asyncio.gather(
                 bridge.execute_js(1, "test1"),
                 bridge.execute_js(2, "test2"),

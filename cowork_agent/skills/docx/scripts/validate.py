@@ -83,6 +83,7 @@ def validate(docx_path: str) -> dict:
     }
 
 def main():
+    """CLI entry point for validating a .docx file structure."""
     if len(sys.argv) < 2:
         print("Usage: python validate.py <file.docx>")
         sys.exit(1)

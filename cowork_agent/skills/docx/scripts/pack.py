@@ -40,6 +40,7 @@ def pack(source_dir: str, output_path: str = None) -> str:
     return str(output)
 
 def main():
+    """CLI entry point for packing an unpacked directory into a .docx file."""
     if len(sys.argv) < 2:
         print("Usage: python pack.py <unpacked_dir> [output.docx]")
         sys.exit(1)

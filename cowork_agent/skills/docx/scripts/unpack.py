@@ -41,6 +41,7 @@ def unpack(docx_path: str, output_dir: str = None) -> str:
     return str(output_path)
 
 def main():
+    """CLI entry point for unpacking a .docx file into a directory."""
     if len(sys.argv) < 2:
         print("Usage: python unpack.py <file.docx> [output_dir]")
         sys.exit(1)

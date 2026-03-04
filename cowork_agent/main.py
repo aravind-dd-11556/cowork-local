@@ -102,6 +102,7 @@ def register_tools(registry: ToolRegistry, config: dict) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the cowork-agent command."""
     parser = argparse.ArgumentParser(
         prog="cowork-agent",
         description="Cowork-like AI Agent — CLI interface",
@@ -296,6 +297,7 @@ def _handle_model_commands(args, config) -> None:
 
 
 def main() -> None:
+    """Entry point: parse args, load config, create agent, and run."""
     args = parse_args()
 
     # Logging level
@@ -1747,6 +1749,7 @@ def main() -> None:
         )
 
         async def run_all():
+            """Run API server and optional Telegram bot concurrently."""
             tasks = [asyncio.create_task(api.run())]
             tg_token = getattr(args, "telegram_token", None)
             if tg_token:

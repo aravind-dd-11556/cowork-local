@@ -56,6 +56,7 @@ class ChromeWSClient:
 
     @property
     def is_connected(self) -> bool:
+        """Whether the WebSocket connection is currently active."""
         return self._connected and self._ws is not None
 
     async def connect(self) -> bool:

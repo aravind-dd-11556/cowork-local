@@ -9,6 +9,7 @@ from dataclasses import dataclass, asdict
 
 @dataclass
 class EvalResult:
+    """Result of a single skill evaluation case."""
     prompt: str
     expected_skill: str
     actual_skill: str | None
@@ -18,6 +19,7 @@ class EvalResult:
 
 @dataclass
 class EvalSummary:
+    """Aggregated summary of a full skill evaluation run."""
     total: int
     correct: int
     accuracy: float
@@ -94,6 +96,7 @@ def run_eval(eval_cases: list[dict], skill_registry) -> EvalSummary:
     )
 
 def main():
+    """CLI entry point for running skill evaluations."""
     if len(sys.argv) < 2:
         print("Usage: python run_eval.py <eval_cases.json> [--verbose]")
         print("\neval_cases.json format:")
