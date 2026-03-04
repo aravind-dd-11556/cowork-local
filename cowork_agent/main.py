@@ -1552,6 +1552,26 @@ def main() -> None:
             registry.register(ShortcutsExecuteTool(browser_session=browser_session))
             registry.register(SwitchBrowserTool(browser_session=browser_session))
             logger.info("Browser automation extras registered (4 tools)")
+
+            # Sprint 46: Chrome Extension Bridge
+            try:
+                bridge_cfg = config.get("chrome_bridge", {})
+                if bridge_cfg.get("enabled", False):
+                    from .core.chrome_bridge import ChromeBridge, ChromeBridgeConfig
+                    chrome_config = ChromeBridgeConfig(
+                        enabled=True,
+                        ws_url=bridge_cfg.get("ws_url", "ws://localhost:9222"),
+                        connect_timeout=bridge_cfg.get("connect_timeout", 10.0),
+                        request_timeout=bridge_cfg.get("request_timeout", 30.0),
+                        auto_reconnect=bridge_cfg.get("auto_reconnect", True),
+                    )
+                    chrome_bridge = ChromeBridge(chrome_config)
+                    chrome_bridge.attach_to_session(browser_session)
+                    logger.info("Chrome extension bridge configured (ws_url=%s)",
+                               chrome_config.ws_url)
+            except Exception as e:
+                logger.debug(f"Chrome bridge not available: {e}")
+
     except Exception as e:
         logger.debug(f"Browser automation tools not available: {e}")
 

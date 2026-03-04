@@ -402,7 +402,7 @@ The framework was built across 43 sprints, each adding a major subsystem. Here i
 | 33 | **Browser Automation Core** | Browser session manager (Playwright integration), page navigation, clicking, typing, scrolling, screenshots, DOM reading with accessibility tree, element finding, JavaScript execution, form filling |
 | 34 | **Browser Extended** | Tab management (create, switch, close), cookie management (get, set, delete), network request monitoring, console message reading |
 | 35 | **Browser Extras** | Drag-and-drop support, file upload, advanced screenshot regions, element hover, resize window, GIF recording |
-| 36 | **CRM Integration** | Zoho CRM tools (search, create, update, delete, upsert records; add/remove tags; assign/remove territories; manage custom layouts) |
+| 36 | **CRM Integration** | CRM tools (search, create, update, delete, upsert records; add/remove tags; assign/remove territories; manage custom layouts) |
 
 ### System Prompt & Model Selection (Sprints 37–38)
 
@@ -646,7 +646,7 @@ cowork_agent/
 │   ├── browser_tools.py            # Browser automation core (13 tools)
 │   ├── browser_tools_ext.py        # Browser extended (tabs, cookies, network)
 │   ├── browser_tools_extra.py      # Browser extras (drag-drop, console, GIF)
-│   ├── crm_tools.py                # Zoho CRM integration tools
+│   ├── crm_tools.py                # CRM integration tools
 │   └── connector_tools.py          # Connector auth tools (connect, disconnect, list, status)
 ├── interfaces/
 │   ├── base.py                     # Abstract interface contract

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body {
+      width: 300px;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      color: #333;
+      margin: 0;
+    }
+    h1 {
+      font-size: 16px;
+      margin: 0 0 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      margin-bottom: 12px;
+    }
+    .status.connected {
+      background: #e6f7e6;
+      color: #1a7a1a;
+    }
+    .status.disconnected {
+      background: #fde8e8;
+      color: #c53030;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    .dot.green { background: #38a169; }
+    .dot.red { background: #e53e3e; }
+    button {
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      transition: background 0.2s;
+    }
+    .btn-connect {
+      background: #4a90d9;
+      color: white;
+    }
+    .btn-connect:hover { background: #357abd; }
+    .btn-disconnect {
+      background: #e53e3e;
+      color: white;
+    }
+    .btn-disconnect:hover { background: #c53030; }
+    .info {
+      font-size: 12px;
+      color: #666;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Open-Cowork Bridge</h1>
+  <div id="status" class="status disconnected">
+    <span id="dot" class="dot red"></span>
+    <span id="statusText">Disconnected</span>
+  </div>
+  <button id="actionBtn" class="btn-connect" onclick="toggleConnection()">
+    Connect to Agent
+  </button>
+  <div class="info" id="info">Agent URL: ws://localhost:9222</div>
+  <script src="popup.js"></script>
+</body>
+</html>

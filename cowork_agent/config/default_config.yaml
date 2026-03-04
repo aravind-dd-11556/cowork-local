@@ -85,6 +85,14 @@ mcp:
   enabled: false
   servers: []
 
+# Sprint 46: Chrome Extension Bridge
+chrome_bridge:
+  enabled: false
+  ws_url: "ws://localhost:9222"
+  connect_timeout: 10.0
+  request_timeout: 30.0
+  auto_reconnect: true
+
 plugins:
   enabled: true
   user_plugins_dir: "~/.cowork_agent/plugins"

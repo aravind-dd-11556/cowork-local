@@ -1,86 +1,82 @@
 ---
 name: schedule
-description: "Create scheduled tasks that can be run on demand or automatically on a recurring interval."
+description: "Schedule and automate recurring tasks. Create Scheduled tasks that run on demand or on intervals.\n  MANDATORY TRIGGERS: schedule, cron, recurring, automated task, interval, timer"
 ---
 
-# Schedule Skill
+You are creating a reusable scheduled task. Follow these steps:
 
-MANDATORY TRIGGERS: schedule, scheduled task, recurring, interval, cron, automate, timer, periodic
+## 1. Analyze the Session
 
-## Overview
+Review the session history to identify the core task. Distill it into a single, repeatable objective.
 
-Create tasks that run automatically on a schedule or can be triggered manually.
+## 2. Draft a Prompt
 
-## Creating a Scheduled Task
+The prompt will be used for future autonomous runs — it must be entirely self-contained. Future runs will NOT have access to this session.
 
-Use the `create_scheduled_task` tool with these parameters:
+Include in the description:
+- A clear objective statement (what to accomplish)
+- Specific steps to execute
+- Any relevant file paths, URLs, repositories, or tool names
+- Expected output or success criteria
+- Any constraints or preferences the user expressed
 
-- **taskId**: Kebab-case identifier (e.g., `daily-report`, `check-inbox`)
-- **prompt**: Complete instructions for what the task should do
-- **description**: One-line summary
-- **cronExpression**: Optional 5-field cron for automatic scheduling
+Write in second-person imperative ("Check the inbox...", "Run the test suite...").
 
-## Cron Expression Format
+## 3. Choose a taskId
+
+Pick a short, descriptive name in kebab-case (e.g., "daily-inbox-summary", "weekly-dep-audit").
+
+## 4. Determine Scheduling
+
+- **Clearly one-off** (e.g., "refactor this function") — omit cron expression
+- **Clearly recurring** (e.g., "check inbox every morning") — include cron expression
+- **Ambiguous** — propose a schedule and ask user to confirm
+
+**IMPORTANT: Cron expressions run in the user's local timezone, NOT UTC.**
+
+### Cron Expression Format
 
 Format: `minute hour dayOfMonth month dayOfWeek`
-
-**IMPORTANT**: Cron expressions use the user's **local timezone**, NOT UTC.
 
 ### Common Patterns
 ```
 0 9 * * *       → Every day at 9:00 AM
 0 9 * * 1-5     → Weekdays at 9:00 AM
 30 8 * * 1      → Every Monday at 8:30 AM
-0 0 1 * *       → First day of every month at midnight
+0 0 1 * *       → First of every month at midnight
 0 */2 * * *     → Every 2 hours
 0 9,17 * * *    → At 9 AM and 5 PM daily
 ```
 
-## Writing Task Prompts
-
-### Best Practices
-1. **Self-contained**: The prompt must include ALL context needed
-2. **No session references**: Don't reference conversation history or session state
-3. **Specific actions**: Clearly describe what to check, create, or update
-4. **Output format**: Specify how results should be presented
-
-### Example — Daily Stand-up
+### Example — Daily Standup
 ```
 taskId: daily-standup
-description: Generate a daily standup summary from git commits
+description: Generate daily standup summary from git commits
 cronExpression: 0 9 * * 1-5
 prompt: |
-  Check the git log for commits made yesterday in the workspace.
-  Summarize what was accomplished, what's in progress, and any blockers.
-  Format as a brief standup update with 3 sections:
-  - Done yesterday
-  - Planned today
-  - Blockers
+  Check the git log for commits made yesterday.
+  Summarize: Done yesterday, Planned today, Blockers.
 ```
 
 ### Example — Weekly Report
 ```
 taskId: weekly-report
-description: Create a weekly progress report
+description: Create weekly progress report
 cronExpression: 0 17 * * 5
 prompt: |
-  Analyze the git commits and file changes from the past week.
-  Create a markdown report summarizing:
-  - Key accomplishments
-  - Files changed (grouped by area)
-  - Lines added/removed
-  Save as weekly-report-{date}.md in the workspace.
+  Analyze git commits from the past week.
+  Create a markdown report with key accomplishments,
+  files changed, and lines added/removed.
 ```
 
-## Managing Scheduled Tasks
+## 5. Create the Task
 
-- **List**: Use `list_scheduled_tasks` to see all tasks
-- **Update**: Use `update_scheduled_task` to change schedule or prompt
-- **Pause**: Set `enabled: false` to pause automatic runs
-- **Delete**: Use `delete_scheduled_task` to remove
-- **Run now**: Use `run_scheduled_task` to execute immediately
+Finally, call the `create_scheduled_task` tool with your taskId, prompt, description, and optional cronExpression.
 
-## Ad-Hoc Tasks
+## Managing Tasks
 
-Omit the `cronExpression` to create a task that can only be run manually.
-Useful for tasks that need to be triggered on demand.
+- **List**: `list_scheduled_tasks`
+- **Update**: `update_scheduled_task` to change schedule or prompt
+- **Pause**: Set `enabled: false`
+- **Delete**: `delete_scheduled_task`
+- **Run now**: `run_scheduled_task`

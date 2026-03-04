@@ -142,12 +142,32 @@ class BrowserSession:
         default_viewport: Tuple[int, int] = (1280, 900),
         on_navigate: Optional[Callable] = None,
         on_screenshot: Optional[Callable] = None,
+        # Sprint 46: Extended callbacks for Chrome bridge integration
+        on_get_tree: Optional[Callable] = None,
+        on_find: Optional[Callable] = None,
+        on_form_input: Optional[Callable] = None,
+        on_perform_action: Optional[Callable] = None,
+        on_js_execute: Optional[Callable] = None,
+        on_get_text: Optional[Callable] = None,
+        on_read_console: Optional[Callable] = None,
+        on_read_network: Optional[Callable] = None,
+        on_resize: Optional[Callable] = None,
     ):
         self._groups: Dict[str, TabGroup] = {}
         self._next_tab_id = 1
         self._default_viewport = default_viewport
         self._on_navigate = on_navigate      # Callback for real browser integration
         self._on_screenshot = on_screenshot  # Callback for real screenshot capture
+        # Sprint 46: Extended callbacks for Chrome extension bridge
+        self._on_get_tree = on_get_tree          # Get real accessibility tree
+        self._on_find = on_find                  # Find elements in real DOM
+        self._on_form_input = on_form_input      # Set form values in real DOM
+        self._on_perform_action = on_perform_action  # Real mouse/keyboard actions
+        self._on_js_execute = on_js_execute      # Execute JS in real browser
+        self._on_get_text = on_get_text          # Get real page text
+        self._on_read_console = on_read_console  # Read real console messages
+        self._on_read_network = on_read_network  # Read real network requests
+        self._on_resize = on_resize              # Resize real browser window
         # Current active group for MCP context
         self._active_group_id: Optional[str] = None
 
